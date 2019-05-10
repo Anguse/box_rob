@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <string.h>
+#include <math.h>
 
 #define RECEIVE_PORT 9888
 #define SEND_PORT 9887
@@ -26,24 +27,22 @@
 #define MIN_SCANS 100
 #define SCAN_TIMEOUT_MS 10000
 
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
+
 // Threads
 pthread_t match;
 
 // Network
 int sockfd;
 
-//void *cox_linefit(void *param)(
-//
-//
-//	//Make laser scan
-//
-//	//Calc linefit
-//
-//	//Update global variables and flag
-//
-//);
+// Map
+//ArrayXXf map(4, 4);
+MatrixXd map(4,4);
 
-using Eigen::MatrixXd;
+// Cache
+//ArrayXXf last_scan(MIN_SCANS, 3);
+MatrixXd last_scan(MIN_SCANS, 3);
 
 
 int start_lidar(){
@@ -137,7 +136,7 @@ int start_lidar_server(){
 	serv_addr.sin_port = htons(RECEIVE_PORT);
 
 	if (bind(sockfd, (struct sockaddr *)&serv_addr,
-								 sizeof(serv_addr))<0)
+			sizeof(serv_addr))<0)
 	{
 		perror("bind failed");
 		exit(EXIT_FAILURE);
@@ -166,9 +165,9 @@ void interrupt_handler(int s){
 	exit(1);
 }
 
-Eigen::ArrayXXf get_scan(int sockfd, int scan_duration_ms, int min_scans){
-	Eigen::ArrayXXf all_scans(min_scans, 3);
-	Eigen::ArrayXf one_scan(3);
+MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
+	MatrixXd all_scans(min_scans, 3);
+	VectorXd one_scan(3);
 	struct timeval tp;
 	char header[5];
 	char data[4096];
@@ -191,8 +190,10 @@ Eigen::ArrayXXf get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			angle = ((int)data[1]>>1) + ((int)data[2]>>8);
 			distance = ((int)data[3]) + ((int)data[4]>>8);
 			one_scan << quality, angle, distance;
-			all_scans.row(number_of_scans) = one_scan;
-			number_of_scans++;
+			if(quality != 1){
+				all_scans.row(number_of_scans) = one_scan;
+				number_of_scans++;
+			}
 		}
 		gettimeofday(&tp, NULL);
 		current_time_ms = tp.tv_sec * 1000 + tp.tv_usec / 1000;
@@ -200,24 +201,100 @@ Eigen::ArrayXXf get_scan(int sockfd, int scan_duration_ms, int min_scans){
 	return all_scans;
 }
 
+void *cox_linefit(void *ptr){
+	VectorXd result(3);
+	MatrixXd rot(2,2);
+
+	rot.col(0) << 0, -1;
+	rot.col(1) << 1, 0;
+
+	MatrixXd U(map.cols(), 2);
+	VectorXd R(map.cols());
+
+	// Get unit vectors of all lines
+	for(int kk = 0; kk < map.cols(); kk++){
+
+		MatrixXd L1(2,2);
+		MatrixXd L2(2,2);
+		MatrixXd V(2,2);
+		MatrixXd Ui(2,2);
+		VectorXd Uii(2);
+		VectorXd z(2);
+		double Ri;
+
+		L1.col(0) << map.row(kk).col(2), map.row(kk).col(2);	// [X1, Y1; X2, Y2]
+		L1.col(1) << map.row(kk).col(1), map.row(kk).col(3);
+		L2.col(0) << map.row(kk).col(0), map.row(kk).col(0);	// [X1, X1; Y1, Y1]
+		L2.col(1) << map.row(kk).col(1), map.row(kk).col(1);
+
+		V = rot*(L1-L2);
+		Ui = V/V.norm();
+		Uii << Ui.row(1).col(0), Ui.row(1).col(1);
+		z << L1.row(1).col(0), L1.row(1).col(1);
+		Ri = Uii.dot(z);
+
+		R(kk) = Ri;
+		U.row(kk) = Uii;
+	}
+
+	bool finished = false;
+
+	// Main loop
+	while(!finished){
+		int inliers = 0;
+
+		for(int ii = 0; ii < MIN_SCANS; ii++){
+			double angle, dist, x, y;
+
+			angle = last_scan(ii, 1)*M_PI/180;
+			dist = last_scan(ii, 2);
+			x = cos(angle)*dist;
+			y = sin(angle)*dist;
+		}
+	}
+
+	VectorXd scan_x(MIN_SCANS);
+	VectorXd scan_y(MIN_SCANS);
+
+	//	std::cout << "x: "<< scan_x << "\n";
+	//	std::cout << "y: "<< scan_y << "\n";
+
+
+	last_scan.col(0)*=M_PI/180;
+
+	return NULL;
+}
+
 int main(){
+
 	// Interrupt handling to make sure lidar stops on SIGINT
 	struct sigaction sigIntHandler;
 	sigIntHandler.sa_handler = interrupt_handler;
 	sigemptyset(&sigIntHandler.sa_mask);
-    sigIntHandler.sa_flags = 0;
-    sigaction(SIGINT, &sigIntHandler, NULL);
+	sigIntHandler.sa_flags = 0;
+	sigaction(SIGINT, &sigIntHandler, NULL);
 
-	Eigen::ArrayXXf last_scan(MIN_SCANS, 3);
+	// Construct map
+	VectorXd line(4);
+	line << 0, 0, 0, 310;	//x1, y1, x2, y2
+	map.row(0) = line;
+	line << 0, 310, 260, 310;
+	map.row(1) = line;
+	line << 260, 310, 260, 0;
+	map.row(2) = line;
+	line << 260, 0, 0, 0;
+	map.row(3) = line;
 
 	start_lidar();
 	sockfd = start_lidar_server();
-	usleep(2000000);
-	while(1){
-		last_scan = get_scan(sockfd ,SCAN_TIMEOUT_MS, MIN_SCANS);
-		std::cout << last_scan << "\n";
-		usleep(2000000);
-	}
+	last_scan = get_scan(sockfd, SCAN_TIMEOUT_MS, MIN_SCANS);
+
+	pthread_create(&match, NULL, cox_linefit, (void*)NULL);
+	usleep(3000000);
+	pthread_join(match, NULL);
+
+	stop_lidar();
+	close(sockfd);
 	return 0;
 }
 

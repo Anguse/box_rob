@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <string.h>
 #include <math.h>
+#include <fstream>
 
 #define RECEIVE_PORT 9888
 #define SEND_PORT 9887
@@ -29,6 +30,7 @@
 
 using Eigen::MatrixXd;
 using Eigen::VectorXd;
+using namespace std;
 
 // Threads
 pthread_t match;
@@ -202,17 +204,41 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 }
 
 void *cox_linefit(void *ptr){
-	VectorXd result(3);
-	MatrixXd rot(2,2);
 
-	rot.col(0) << 0, -1;
-	rot.col(1) << 1, 0;
+	int nr_of_lines = map.cols();
+	double threshold = 500;
+	double ddx = 0;					// Adjustment to initial position
+	double ddy = 0;
+	double dda = 0;
+	int alfa = 0;					// Robot offset
+	int gamma = 0;
+	int beta = (-90*M_PI)/180;
 
-	MatrixXd U(map.cols(), 2);
-	VectorXd R(map.cols());
+	MatrixXd U(nr_of_lines, 2);		// Unit vectors
+	VectorXd R(nr_of_lines);
+	MatrixXd rot(2,2);				// 90 Degree rotation matrix
+	MatrixXd rob_rot(3,3);			// Rotation matrix, sensor coordinates -> robot coordinates
+	MatrixXd world_rot(3,3);		// Rotation matrix, robot coordinates -> world coordinates
+	VectorXd v(2);					// Point [X, Y]
+	MatrixXd vi(1,3);				// Point and target index if inlier [X, Y, idx]
+	VectorXd state(3);				// The adjusted position of the robot
+	VectorXd Xw(3); 				// World coordinates
+	VectorXd vm(2);					// Median of all points
+	VectorXd yy(nr_of_lines);		// Distance from point to lines
+	VectorXd targets(1);			// All targets
+	VectorXd X1(1), X2(1), X3(1);	// Input to solve least square fit
+
+	state << 0, 0, 90*M_PI/180; 	// Initial position
+	vm << state(1), state(2); 		// Median?
+
+	rot << 0, -1,
+		   1, 0;
+	rob_rot << cos(gamma), -sin(gamma), alfa,
+			   sin(gamma), cos(gamma), 	beta,
+			   0,		   0, 		    1;
 
 	// Get unit vectors of all lines
-	for(int kk = 0; kk < map.cols(); kk++){
+	for(int kk = 0; kk < nr_of_lines; kk++){
 
 		MatrixXd L1(2,2);
 		MatrixXd L2(2,2);
@@ -222,45 +248,104 @@ void *cox_linefit(void *ptr){
 		VectorXd z(2);
 		double Ri;
 
-		L1.col(0) << map.row(kk).col(2), map.row(kk).col(2);	// [X1, Y1; X2, Y2]
-		L1.col(1) << map.row(kk).col(1), map.row(kk).col(3);
-		L2.col(0) << map.row(kk).col(0), map.row(kk).col(0);	// [X1, X1; Y1, Y1]
-		L2.col(1) << map.row(kk).col(1), map.row(kk).col(1);
+		L1 << map(kk,0), map(kk,1),	//[X1, Y1,
+			  map(kk,2), map(kk,3); // X2, Y2]
+		L2 << map(kk,0), map(kk,1), //[X1, Y1
+			  map(kk,0), map(kk,1); // X1, Y1]
 
 		V = rot*(L1-L2);
 		Ui = V/V.norm();
-		Uii << Ui.row(1).col(0), Ui.row(1).col(1);
-		z << L1.row(1).col(0), L1.row(1).col(1);
+		Uii << Ui(0), Ui(2);
+		z << L1(1,0), L1(1,1);
 		Ri = Uii.dot(z);
 
 		R(kk) = Ri;
 		U.row(kk) = Uii;
 	}
 
-	bool finished = false;
-
 	// Main loop
+	bool finished = false;
 	while(!finished){
+
+		double angle, dist, x, y;
+	    double dx, dy, da;
+		double target;
+		int target_index;
 		int inliers = 0;
+	    int n;
+
+		MatrixXd A(inliers, 3);
+	    VectorXd B(3);
+	    MatrixXd S2(3,3);
+
+		world_rot << cos(state(2)), -sin(state(2)), state(0),
+					 sin(state(2)), cos(state(2)),  state(1),
+					 0, 			   0, 				  1;
 
 		for(int ii = 0; ii < MIN_SCANS; ii++){
-			double angle, dist, x, y;
-
 			angle = last_scan(ii, 1)*M_PI/180;
 			dist = last_scan(ii, 2);
 			x = cos(angle)*dist;
 			y = sin(angle)*dist;
+			Xw << x, y, 1;
+			Xw = rob_rot*Xw;
+			Xw = world_rot*Xw;
+			v << Xw(0), Xw(1);
+			for(int kk = 0; kk < nr_of_lines; kk++){
+				yy(kk) = abs(R(kk)-(U.row(kk).dot(v)));
+			}
+			target = yy.minCoeff(&target_index);
+			if(target<threshold){
+				inliers++;
+				X1.conservativeResize(inliers);		//Time consuming...
+				X2.conservativeResize(inliers);
+				X3.conservativeResize(inliers);
+				vi.conservativeResize(inliers, 3);
+				targets.conservativeResize(inliers);
+				X1(inliers-1) = U(target_index,0);
+	            X2(inliers-1) = U(target_index,1);
+	            X3(inliers-1) = U.row(target_index)*rot*(v-vm);
+	            targets(inliers-1) = target;
+	            vi.row(inliers-1).col(0) << v(0);
+				vi.row(inliers-1).col(1) << v(1);
+	            vi(inliers-1, 2) = target_index;
+			}
 		}
+//	    % 3.Set up linear equation system
+		A.col(0) = X1;
+		A.col(1) = X2;
+		A.col(2) = X3;
+		B = A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(targets); // Least square fit
+
+		n = A.size();
+	    S2 = ((targets-A*B).transpose()*(targets-A*B))/(n-4); // Calculate the variance
+//	    C = S2*(inv(A'*A));
+
+////	% 4.Add latest contribution to the overall congruence
+	    dx = B(0);
+	    dy = B(1);
+	    da = B(2);
+//
+	    ddx = ddx + dx;
+	    ddy = ddy + dy;
+	    dda = dda + da;
+//
+//	    // Update the position
+	    state(0) += dx;
+	    state(1) += dy;
+	    state(2) += da;
+//
+//	    // Check if process has converged
+	    if((sqrt(pow(dx,2)+pow(dy,2)) < 15)&&(abs(da<0.1*M_PI/180))){
+	    	finished = true;
+	    	std::cout << "Finished!\n";
+	    	break;
+	    }
+		targets.setZero();
 	}
 
 	VectorXd scan_x(MIN_SCANS);
 	VectorXd scan_y(MIN_SCANS);
-
-	//	std::cout << "x: "<< scan_x << "\n";
-	//	std::cout << "y: "<< scan_y << "\n";
-
-
-	last_scan.col(0)*=M_PI/180;
 
 	return NULL;
 }
@@ -285,16 +370,23 @@ int main(){
 	line << 260, 0, 0, 0;
 	map.row(3) = line;
 
-	start_lidar();
-	sockfd = start_lidar_server();
-	last_scan = get_scan(sockfd, SCAN_TIMEOUT_MS, MIN_SCANS);
+//	ifstream in("lidar_log_with_odometry.txt",ios::binary);
+//	string read_line;
+//	while(getline(in,read_line,'\t')){
+//		cout << line << endl;
+//	}
+
+
+//	start_lidar();
+//	sockfd = start_lidar_server();
+//	last_scan = get_scan(sockfd, SCAN_TIMEOUT_MS, MIN_SCANS);
 
 	pthread_create(&match, NULL, cox_linefit, (void*)NULL);
 	usleep(3000000);
 	pthread_join(match, NULL);
 
-	stop_lidar();
-	close(sockfd);
+//	stop_lidar();
+//	close(sockfd);
 	return 0;
 }
 

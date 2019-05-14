@@ -5,6 +5,7 @@
  *      Author: harald
  */
 #include <iostream>
+#include <fstream>
 #include <eigen3/Eigen/Dense>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -44,7 +45,12 @@ MatrixXd line_map(4,4);
 // Cache
 MatrixXd last_scan(MIN_SCANS, 3);
 VectorXd cox_adjustment(3);
+VectorXd position(3);
 bool cox_done;
+
+// Logging
+ifstream inputFile;
+ofstream adjustments, measurements, positions, scan_log;
 
 
 int start_lidar(){
@@ -207,14 +213,14 @@ void *cox_linefit(void *ptr){
 
 	int iterations = 0;
 	int nr_of_lines = line_map.cols();
-	double threshold = 10;			// Fixed threshold value
+	double threshold = 100;			// Fixed threshold value
 	double ddx = 0;					// Adjustment to initial position
 	double ddy = 0;
 	double dda = 0;
 
 	int alfa = 0;					// Robot offset
+	int beta = 0;
 	int gamma = 0;
-	int beta = (-90*M_PI)/180;
 
 	MatrixXd U(nr_of_lines, 2);		// Unit vectors
 	VectorXd R(nr_of_lines);		// Unit vectors projected on corresponding line
@@ -230,8 +236,8 @@ void *cox_linefit(void *ptr){
 	VectorXd targets(1);			// All targets
 	VectorXd X1(1), X2(1), X3(1);	// Input to solve least square fit
 
-	state << 50, 140, 90*M_PI/180; 	// Initial position
-	vm << state(1), state(2);
+	state << 1215, 160, M_PI/2;		// Initial position
+	vm << state(0), state(1);		//
 
 	rot << 0, -1,
 		   1, 0;
@@ -283,8 +289,9 @@ void *cox_linefit(void *ptr){
 					 sin(state(2)), cos(state(2)),  state(1),
 					 0, 			   0, 				  1;
 
+
 		for(int ii = 0; ii < MIN_SCANS; ii++){
-			angle = last_scan(ii, 1)*M_PI/180;
+			angle = last_scan(ii, 1);
 			dist = last_scan(ii, 2);
 			x = cos(angle)*dist;
 			y = sin(angle)*dist;
@@ -334,19 +341,20 @@ void *cox_linefit(void *ptr){
 		    // Update the position
 			state(0) += dx;
 			state(1) += dy;
-			state(2) += da;
+			state(2) = fmod(state(2)+da,2*M_PI);
 
 		}
 		    // Check if process has converged
-			if((sqrt(pow(dx,2)+pow(dy,2)) < 5)&&(abs(da<0.1*M_PI/180))){
+			if((sqrt(pow(dx,2)+pow(dy,2)) < 10)&&(abs(da<0.1*M_PI/180))){
 				finished = true;
 				cox_adjustment(0) = ddx;
 				cox_adjustment(1) = ddy;
 				cox_adjustment(2) = dda;
-				pthread_mutex_lock(&coxlock);
+//				pthread_mutex_lock(&coxlock);
 				cox_done = true;
-				pthread_mutex_unlock(&coxlock);
-				std::cout << "Finished in " << iterations << "iterations\n";
+//				pthread_mutex_unlock(&coxlock);
+				std::cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
+				scan_log << v.transpose() << "\n";
 				break;
 			}
 			if(iterations > 200){
@@ -380,42 +388,79 @@ int main(){
 
 	// Construct map
 	VectorXd line(4);
-	line << 0, 0, 0, 580;	//x1, y1, x2, y2
+	line << 0, 0, 0, 3635;	//x1, y1, x2, y2
 	line_map.row(0) = line;
-	line << 0, 580, 380, 580;
+	line << 0, 3635, 2421, 3640;
 	line_map.row(1) = line;
-	line << 380, 580, 380, 0;
+	line << 2421, 3640, 2430, 0;
 	line_map.row(2) = line;
-	line << 380, 0, 0, 0;
+	line << 2430, 0, 0, 0;
 	line_map.row(3) = line;
 
-	start_lidar();
-	sockfd = start_lidar_server();
-//	usleep(2000000);
-//	last_scan = get_scan(sockfd, match, MIN_SCANS);
-//	stop_lidar();
-//	close(sockfd);
-//	cox_done = false;
-	pthread_mutex_init(&coxlock, NULL);
-	while(1){
+	//Initial position
+	position << 1215, 160, M_PI/2;
+
+	string readval;
+	string::size_type sz;
+
+	inputFile.open("lidar_log_with_odometry.txt");
+	adjustments.open("lidar_adjustment.txt", ofstream::out | ofstream::trunc);
+	measurements.open("lidar_measurements.txt", ofstream::out | ofstream::trunc);
+	scan_log.open("lidar_log.txt", ofstream::out | ofstream::trunc);
+	positions.open("lidar_positions.txt", ofstream::out | ofstream::trunc);
+	while(!inputFile.eof()){
+		for(int i = 0; i < MIN_SCANS; i++){
+			getline(inputFile, readval, '\t');
+			getline(inputFile, readval, '\t');			// Quality
+			last_scan(i,0) = stod(readval,&sz);
+			getline(inputFile, readval, '\t');			// Angles
+			last_scan(i,1) = stod(readval,&sz);
+			last_scan(i,1) = -last_scan(i,1)*M_PI/180;	// Degrees to radians
+			last_scan(i,1) = (last_scan(i,1));
+			last_scan(i,1) = fmod(last_scan(i,1),(2*M_PI));
+			getline(inputFile, readval, '\t');			// Distance
+			last_scan(i,2) = stod(readval,&sz);
+			measurements << last_scan.row(i) << "\n";
+		}
 		cox_done = false;
-		last_scan = get_scan(sockfd, match, MIN_SCANS);
 		pthread_create(&match, NULL, cox_linefit, (void*)NULL);
 		while(1){
 //			pthread_mutex_lock(&coxlock);
 			if(cox_done){
+				position(0) += cox_adjustment(0);
+				position(1) += cox_adjustment(1);
+				position(2) += cox_adjustment(2);
+				positions << position.transpose() << "\n";
+				adjustments << cox_adjustment.transpose() << "\n";
 				break;
 			}
 //			pthread_mutex_unlock(&coxlock);
 		}
-		cout << cox_adjustment << "\n";
 	}
-//	pthread_create(&match, NULL, cox_linefit, (void*)NULL);
-//	usleep(3000000);
-//	pthread_join(match, NULL);
-//	cout << cox_adjustment << "\n";
-	stop_lidar();
-	close(sockfd);
+	inputFile.close();
+	adjustments.close();
+	measurements.close();
+	scan_log.close();
+	positions.close();
+
+//	start_lidar();
+//	sockfd = start_lidar_server();
+//	pthread_mutex_init(&coxlock, NULL);
+//	while(1){
+//		cox_done = false;
+//		last_scan = get_scan(sockfd, match, MIN_SCANS);
+//		pthread_create(&match, NULL, cox_linefit, (void*)NULL);
+//		while(1){
+//			pthread_mutex_lock(&coxlock);
+//			if(cox_done){
+//				break;
+//			}
+//			pthread_mutex_unlock(&coxlock);
+//		}
+//		cout << cox_adjustment << "\n";
+//	}
+//	stop_lidar();
+//	close(sockfd);
 	exit(1);
 }
 

@@ -213,7 +213,7 @@ void *cox_linefit(void *ptr){
 
 	int iterations = 0;
 	int nr_of_lines = line_map.cols();
-	double threshold = 100;			// Fixed threshold value
+	double threshold = 25;			// Fixed threshold value
 	double ddx = 0;					// Adjustment to initial position
 	double ddy = 0;
 	double dda = 0;
@@ -377,7 +377,7 @@ void *cox_linefit(void *ptr){
 				cox_done = true;
 //				pthread_mutex_unlock(&coxlock);
 				std::cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
-				scan_log << v.transpose() << "\n";
+				scan_log << vi << "\n";
 				break;
 			}
 			if(iterations > 200){
@@ -431,6 +431,7 @@ int main(){
 	measurements.open("lidar_measurements.txt", ofstream::out | ofstream::trunc);
 	scan_log.open("lidar_log.txt", ofstream::out | ofstream::trunc);
 	positions.open("lidar_positions.txt", ofstream::out | ofstream::trunc);
+
 	while(!inputFile.eof()){
 		for(int i = 0; i < MIN_SCANS; i++){
 			getline(inputFile, readval, '\t');

@@ -220,7 +220,7 @@ void *cox_linefit(void *ptr){
 
 	int alfa = 0;					// Robot offset
 	int beta = 0;
-	int gamma = 0;
+	int gamma = -M_PI/2;
 
 	MatrixXd U(nr_of_lines, 2);		// Unit vectors
 	VectorXd R(nr_of_lines);		// Unit vectors projected on corresponding line
@@ -231,13 +231,13 @@ void *cox_linefit(void *ptr){
 	MatrixXd vi(1,3);				// Point and target index if inlier [X, Y, idx]
 	VectorXd state(3);				// The adjusted position of the robot
 	VectorXd Xw(3); 				// World coordinates
+	MatrixXd Xww(MIN_SCANS,3);		// World coordinates, All
 	VectorXd vm(2);					// Median of all points
 	VectorXd yy(nr_of_lines);		// Distance from point to lines
 	VectorXd targets(1);			// All targets
 	VectorXd X1(1), X2(1), X3(1);	// Input to solve least square fit
 
-	state << 1215, 160, M_PI/2;		// Initial position
-	vm << state(0), state(1);		//
+	state << position(0), position(1), position(2);		// Initial position
 
 	rot << 0, -1,
 		   1, 0;
@@ -298,6 +298,18 @@ void *cox_linefit(void *ptr){
 			Xw << x, y, 1;
 			Xw = rob_rot*Xw;
 			Xw = world_rot*Xw;
+			Xww.row(ii) = Xw;
+		}
+		vm << Xww.col(0).array().mean(), Xww.col(1).array().mean();
+
+		for(int ii = 0; ii < MIN_SCANS; ii++){
+			angle = last_scan(ii, 1);
+			dist = last_scan(ii, 2);
+			x = cos(angle)*dist;
+			y = sin(angle)*dist;
+			Xw << x, y, 1;
+			Xw = rob_rot*Xw;
+			Xw = world_rot*Xw;
 			v << Xw(0), Xw(1);
 			for(int kk = 0; kk < nr_of_lines; kk++){
 				yy(kk) = abs(R(kk)-(U.row(kk).dot(v)));
@@ -336,7 +348,7 @@ void *cox_linefit(void *ptr){
 
 			ddx = ddx + dx;
 			ddy = ddy + dy;
-			dda = dda + da;
+			dda = fmod(dda + da,2*M_PI);
 
 		    // Update the position
 			state(0) += dx;
@@ -344,8 +356,19 @@ void *cox_linefit(void *ptr){
 			state(2) = fmod(state(2)+da,2*M_PI);
 
 		}
+			// If adjustment is too big we are on the wrong track, discard these adjustments
+			if(abs(ddx)>100 || (abs(ddy)>100) || (abs(dda) >0.5)){
+				ddx = 0;
+				ddy = 0;
+				dda = 0;
+				cox_adjustment(0) = ddx;
+				cox_adjustment(1) = ddy;
+				cox_adjustment(2) = dda;
+				cox_done = true;
+				finished = true;
+			}
 		    // Check if process has converged
-			if((sqrt(pow(dx,2)+pow(dy,2)) < 10)&&(abs(da<0.1*M_PI/180))){
+			if((sqrt(pow(dx,2)+pow(dy,2)) < 15)&&(abs(da<0.1*M_PI/180))){
 				finished = true;
 				cox_adjustment(0) = ddx;
 				cox_adjustment(1) = ddy;
@@ -416,7 +439,7 @@ int main(){
 			getline(inputFile, readval, '\t');			// Angles
 			last_scan(i,1) = stod(readval,&sz);
 			last_scan(i,1) = -last_scan(i,1)*M_PI/180;	// Degrees to radians
-			last_scan(i,1) = (last_scan(i,1));
+			last_scan(i,1) = (last_scan(i,1)+M_PI/2);
 			last_scan(i,1) = fmod(last_scan(i,1),(2*M_PI));
 			getline(inputFile, readval, '\t');			// Distance
 			last_scan(i,2) = stod(readval,&sz);

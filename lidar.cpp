@@ -53,6 +53,9 @@ bool cox_done;
 ifstream inputFile;
 ofstream adjustments, measurements, positions, scan_log, scan_inliers;
 
+double alfa;
+double beta;
+double gamma_a;
 
 int start_lidar(){
 	struct sockaddr_in serv_addr;
@@ -175,6 +178,7 @@ void interrupt_handler(int s){
 	scan_log.close();
 	positions.close();
 	stop_lidar();
+	pthread_mutex_destroy(&coxlock);
 	close(sockfd);
 	exit(1);
 }
@@ -201,9 +205,9 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			number_of_data = (((int)header[2]<<16) + ((int)header[3]<<8) + ((int)header[4]));
 			read(sockfd, data, number_of_data);
 			quality = (int)data[0]>>2;
-			angle = ((int)data[1]>>1) + ((int)data[2]>>8);
-			distance = ((int)data[3]) + ((int)data[4]>>8);
-			one_scan << quality, angle*M_PI/180, distance;
+			angle = (((int)data[1]>>1) + ((int)data[2]<<8))>>7;
+			distance = (((int)data[3]) + ((int)data[4]<<8))>>2;
+			one_scan << quality, fmod((-angle*M_PI/180+M_PI/2),M_PI*2), distance;
 			if(quality != 1){
 				all_scans.row(number_of_scans) = one_scan;
 				number_of_scans++;
@@ -219,14 +223,10 @@ void *cox_linefit(void *ptr){
 
 	int iterations = 0;
 	int nr_of_lines = line_map.cols();
-	double threshold = 1000;			// Fixed threshold value
+	double threshold = 225;			// Fixed threshold value
 	double ddx = 0;					// Adjustment to initial position
 	double ddy = 0;
 	double dda = 0;
-
-	int alfa = 0;					// Robot offset
-	int beta = 0;
-	int gamma = 0;
 
 	MatrixXd U(nr_of_lines, 2);		// Unit vectors
 	VectorXd R(nr_of_lines);		// Unit vectors projected on corresponding line
@@ -249,8 +249,8 @@ void *cox_linefit(void *ptr){
 
 	rot << 0, -1,
 		   1, 0;
-	rob_rot << cos(gamma), -sin(gamma), alfa,
-			   sin(gamma), cos(gamma), 	beta,
+	rob_rot << cos(gamma_a), -sin(gamma_a), alfa,
+			   sin(gamma_a), cos(gamma_a), 	beta,
 			   0,		   0, 		    1;
 
 	// Get unit vectors of all lines
@@ -271,7 +271,7 @@ void *cox_linefit(void *ptr){
 
 		V = rot*(L1-L2);
 		Ui = V/V.norm();
-		Uii << Ui(0), Ui(2);
+		Uii << Ui(2), Ui(0); //0,2
 		z << L1(1,0), L1(1,1);
 		Ri = z.dot(Uii);
 
@@ -327,8 +327,6 @@ void *cox_linefit(void *ptr){
 				yy(kk) = abs(R(kk)-(U.row(kk).dot(v)));
 			}
 			target = yy.minCoeff(&target_index);
-			cout << "Target value: " << target << "at index: " << target_index;
-			cout << "\n";
 			if((target<threshold)/*&&sqrt(pow((Xw(0)-midpoint(target_index,0)),2))+sqrt(pow((Xw(1)-midpoint(target_index,1)),2))<=linelength(target_index)*/){
 				inliers++;
 				X1.conservativeResize(inliers);		//Time consuming...
@@ -369,7 +367,7 @@ void *cox_linefit(void *ptr){
 			state(0) += dx;
 			state(1) += dy;
 			state(2) = fmod(state(2)+da,2*M_PI);
-			threshold = 25;
+			threshold = 100;
 		}
 		// Not enough inliers, change threshold and restart
 		else{
@@ -385,20 +383,22 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
+//			pthread_mutex_lock(&coxlock);
 			cox_done = true;
+//			pthread_mutex_unlock(&coxlock);
 			finished = true;
 			std::cout << "Too big adjustment\n";
 			break;
 		}
 		// Check if process has converged
-		if((sqrt(pow(dx,2)+pow(dy,2)) < 15)&&(abs(da<0.1*M_PI/180))){
+		if((sqrt(pow(dx,2)+pow(dy,2)) < 150)&&(abs(da<0.2*M_PI/180))){
 			finished = true;
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
-//				pthread_mutex_lock(&coxlock);
+//			pthread_mutex_lock(&coxlock);
 			cox_done = true;
-//				pthread_mutex_unlock(&coxlock);
+//			pthread_mutex_unlock(&coxlock);
 			cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
 			break;
 		}
@@ -407,9 +407,9 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = 0;
 			cox_adjustment(1) = 0;
 			cox_adjustment(2) = 0;
-			pthread_mutex_lock(&coxlock);
+//			pthread_mutex_lock(&coxlock);
 			cox_done = true;
-			pthread_mutex_unlock(&coxlock);
+//			pthread_mutex_unlock(&coxlock);
 			std::cout << "Failed to find convergence\n";
 			break;
 		}
@@ -422,7 +422,7 @@ void *cox_linefit(void *ptr){
 	return NULL;
 }
 
-int main(){
+int main_loop(){
 
 	// Interrupt handling to make sure lidar stops on SIGINT
 	struct sigaction sigIntHandler;
@@ -433,6 +433,7 @@ int main(){
 
 	// Construct map
 	VectorXd line(4);
+
 	line << 0, 0, 0, 3635;			//x1, y1, x2, y2
 	line_map.row(0) = line;
 	line << 0, 3640, 2430, 3640;
@@ -456,19 +457,24 @@ int main(){
 	//Initial position
 	position << 1215, 160, 0;
 
+	// Robot offset
+	alfa = 0.0;
+	beta = 0.0;
+	gamma_a = 0.0;
+
 	string readval;
 	string::size_type sz;
-	char *end;
 
-	adjustments.open("lidar_adjustment.txt", ofstream::out | ofstream::trunc);
-	measurements.open("lidar_measurements.txt", ofstream::out | ofstream::trunc);
-	scan_log.open("lidar_log.txt", ofstream::out | ofstream::trunc);
-	positions.open("lidar_positions.txt", ofstream::out | ofstream::trunc);
-	scan_inliers.open("lidar_inliers.txt", ofstream::out | ofstream::trunc);
+	adjustments.open("logs/lidar_adjustment.txt", ofstream::out | ofstream::trunc);
+	measurements.open("logs/lidar_measurements.txt", ofstream::out | ofstream::trunc);
+	scan_log.open("logs/lidar_log.txt", ofstream::out | ofstream::trunc);
+	positions.open("logs/lidar_positions.txt", ofstream::out | ofstream::trunc);
+	scan_inliers.open("logs/lidar_inliers.txt", ofstream::out | ofstream::trunc);
 
 	bool read_from_file = true;
+	pthread_mutex_init(&coxlock, NULL);
 	if(read_from_file){
-		inputFile.open("lidar_log_with_odometry.txt");
+		inputFile.open("logs/lidar_log_with_odometry.txt");
 		while(!inputFile.eof()){
 			for(int i = 0; i < MIN_SCANS; i++){
 				getline(inputFile, readval, '\t');
@@ -486,7 +492,7 @@ int main(){
 			positions << position(0) << "\t" << position(1) << "\n";
 			pthread_create(&match, NULL, cox_linefit, (void*)NULL);
 			while(1){
-	//			pthread_mutex_lock(&coxlock);
+//				pthread_mutex_lock(&coxlock);
 				if(cox_done){
 					position(0) += cox_adjustment(0);
 					position(1) += cox_adjustment(1);
@@ -495,23 +501,24 @@ int main(){
 					adjustments << cox_adjustment.transpose() << "\n";
 					break;
 				}
-	//			pthread_mutex_unlock(&coxlock);
+//				pthread_mutex_unlock(&coxlock);
 			}
 		}
 	}else{
 		start_lidar();
 		sockfd = start_lidar_server();
-		pthread_mutex_init(&coxlock, NULL);
 		while(1){
 			cox_done = false;
 			last_scan = get_scan(sockfd, match, MIN_SCANS);
 			pthread_create(&match, NULL, cox_linefit, (void*)NULL);
 			while(1){
+//				pthread_mutex_lock(&coxlock);
 				if(cox_done){
 					break;
 				}
+//				pthread_mutex_unlock(&coxlock);
+				usleep(500000);		//Sleep 500 ms
 			}
-			cout << last_scan << "\n";
 		}
 		stop_lidar();
 		close(sockfd);
@@ -522,6 +529,7 @@ int main(){
 	scan_log.close();
 	positions.close();
 	scan_inliers.close();
+	pthread_mutex_destroy(&coxlock);
 	exit(1);
 }
 

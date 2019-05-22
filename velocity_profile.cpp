@@ -28,15 +28,15 @@ VectorXd generateEncoderValues(double travelDistanceMM){
 	int encoder = 128;
 	int encoderCounter = 4;
 	double h = 0.01;
-	double gearReduction = 75/19;
-	double gearBoxRatio = 24/1*1/2.5;
+	double gearReduction = 75.0/19.0;
+	double gearBoxRatio = 24.0/1.0*1.0/2.5;
 	double wheelCircumference = 42*M_PI;
 	double nbrPulsePerRevolution = encoder*encoderCounter*gearReduction;
 	double nbrPulsePerMM = nbrPulsePerRevolution*gearBoxRatio/wheelCircumference;
 
-	double maxAcc = 10000*8*8;
-	double maxDeAcc = -10000*8*8;
-	double maxSpeed = 4000*2*2;
+	double maxAcc = 10000*2;
+	double maxDeAcc = -10000*2;
+	double maxSpeed = 2000*8;
 	double startPos = 0;
 	double endPos = travelDistanceMM*nbrPulsePerMM;
 	double breakPos = 0;

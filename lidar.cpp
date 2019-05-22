@@ -443,17 +443,6 @@ int main_loop(){
 	line << 2430, 0, 0, 0;
 	line_map.row(3) = line;
 
-	// Rotation of map
-	//	line << line_map(0,1), line_map(0,0), line_map(0,3), line_map(0,2);	//y1, x1, y2, x2
-	//	line_map.row(0) = line;
-	//	line << line_map(1,1), line_map(1,0), line_map(1,3), line_map(1,2);
-	//	line_map.row(1) = line;
-	//	line << line_map(2,1), line_map(2,0), line_map(2,3), line_map(2,2);
-	//	line_map.row(2) = line;
-	//	line << line_map(3,1), line_map(3,0), line_map(3,3), line_map(3,2);
-	//	line_map.row(3) = line;
-
-
 	//Initial position
 	position << 1215, 160, 0;
 

@@ -1,9 +1,9 @@
 close all; clear all;
 
-% A = load('lidar_measurements.txt');
-% B = load('lidar_positions.txt');
+ A = load('../logs/lidar_measurements.txt');
+% B = load('../logs/lidar_positions.txt');
 % C = load('lidar_log.txt');
-% D = load('lidar_inliers.txt');
+%D = load('../logs/lidar_inliers.txt');
 
 %angle = A(:,2);
 %dist = A(:,3);
@@ -12,8 +12,8 @@ fig = figure;
 hax = axes;
 %X = cos(angle).*dist;
 %Y = sin(angle).*dist;
-X = B(1:10:end,1);
-Y = B(1:10:end,2);
+X = A(1:10:end,1);
+Y = A(1:10:end,2);
 
 hold on;
 line([offset offset], [0 3635],get(hax,'YLim'),'Color',[1 0 0])

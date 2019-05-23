@@ -6,6 +6,7 @@
  */
 
 #include "velocity_profile.h"
+#include "lidar.h"
 #include "spi_com.h"
 #include <wiringPiSPI.h>
 #include <stdio.h>
@@ -25,13 +26,13 @@ int encoder = 128;
 int encoderCounter = 4;
 double gearReduction = 75.0/19.0;
 double gearBoxRatio = 24/1*1/2.5;
-double wheelCirc = 42*M_PI;
-double wheelBaseMM = 170;
+double wheelCirc = 42.0*M_PI;
+double wheelBaseMM = 175.0;
 double pulsesPerRev = encoder*encoderCounter*gearReduction;
 double mmPerPulse = wheelCirc/(pulsesPerRev*gearBoxRatio);
 
 
-double turnAdjustmentFactor = 0.58;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this
+double turnAdjustmentFactor = 0.5;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this (58mm)
 double sigmaEnc = 0.5/12;  			// TODO: value used from intelligent vehicles, find a more suitable value?
 double sigmaWb = 13.0;				// TODO: used from intelligent vehicles, find a more accurate uncertainty for wheel base?
 double sigmaL = sigmaEnc;			// Uncertainty in each wheel
@@ -118,15 +119,13 @@ int updatePos(VectorXd Er, VectorXd El){
 		}
 		cXYA = cAdjXYA;
 		posXYA = posAdjXYA.row(posAdjXYA.rows()-1);
-		cout << posXYA << endl;
-		cout << cXYA << endl;
 	}
-	pos_log << "###Movement values in mm###" << endl;
-	pos_log << "X\tY\tA\t\tsX\tsY\tsA" << endl;
-	for(int i = 0; i < n; i++){
-	   pos_log << posAdjXYA(i,0) << "\t" << posAdjXYA(i,1) << "\t" << posAdjXYA(i,2) << "\t\t" << cStorage(i,0) << "\t" << cStorage(i,4) << "\t" << cStorage(i,8) << endl;
-	}
-	pos_log << "---END---" << endl;
+//	pos_log << "###Movement values in mm###" << endl;
+//	pos_log << "X\tY\tA\t\tsX\tsY\tsA" << endl;
+//	for(int i = 0; i < n; i++){
+//	   pos_log << posAdjXYA(i,0) << "\t" << posAdjXYA(i,1) << "\t" << posAdjXYA(i,2) << "\t\t" << cStorage(i,0) << "\t" << cStorage(i,4) << "\t" << cStorage(i,8) << endl;
+//	}
+//	pos_log << "---END---" << endl;
 	return 0;
 }
 
@@ -233,12 +232,12 @@ int resetEncoders(){
 		pWhite_Board_TX->Heart_Beat = 1;
 		memcpy(buffer,pWhite_Board_TX,32);
 		result = wiringPiSPIDataRW(CHANNEL, buffer, 32);
-		usleep(5000); // sleep in micro sek
+		usleep(10000); // sleep in micro sek
 	  }
 	cout << "Done!\n";
 }
 
-int travel(VectorXd startXYA, VectorXd endXYA){
+int controllerTravel(VectorXd endXYA){
 
 
 	VectorXd El1;	// Part1, 2 and 3 of encoder values
@@ -249,12 +248,12 @@ int travel(VectorXd startXYA, VectorXd endXYA){
 	VectorXd Er3;
 
 	// Convert dX, dY and dA to dD and dA
-	double dX = endXYA(0) - startXYA(0);
-	double dY = endXYA(1) - startXYA(1);
+	double dX = endXYA(0) - posXYA(0);
+	double dY = endXYA(1) - posXYA(1);
 	if(dY == 0){
 		dY = 0.00000000001;
 	}
-	double dA = fmod(atan2(dX,dY)-startXYA(2),2*M_PI); //atan(y/x)
+	double dA = fmod(atan2(dX,dY)-posXYA(2),2*M_PI); //atan(y/x)
 	double dD = sqrt(pow(dX,2)+pow(dY,2));
 
 	// Rotate so there is a straight line from start to end
@@ -274,8 +273,6 @@ int travel(VectorXd startXYA, VectorXd endXYA){
 		sendEncoderValues(Er1, El1);
 	}
 	// Travel distance dD
-	cout << "Travel distance dD = " << dD << endl;
-	cout << "gearReduction = " << gearReduction << endl;
 	El2 = generateEncoderValues(dD);
 	Er2 = El2;
 	sendEncoderValues(Er2, El2);
@@ -300,7 +297,7 @@ int travel(VectorXd startXYA, VectorXd endXYA){
 	return 0;
 }
 
-int main(){
+int controllerInit(VectorXd startXYA){
 	pos_log.open("logs/pos_controller/pos_log.txt", ofstream::out | ofstream::trunc);
 	pWhite_Board_RX = (TYPE_White_Board_RX *)buffer;
 	pWhite_Board_TX = (TYPE_White_Board_TX *)malloc(sizeof(TYPE_White_Board_TX));
@@ -308,20 +305,54 @@ int main(){
 		cout << "Couldn't allocate" << endl;
 		exit(1);
 	}
-	VectorXd startXYA(3), endXYA(3);
 	cXYA << 1, 0, 0,
 			0, 1, 0,
 			0, 0, pow(M_PI/180,2);
-	posXYA << 1215, 160, 0;
-	startXYA = posXYA;
-	endXYA << 1215, 160+500, 0;
+	posXYA = startXYA;
 	resetEncoders();
-	travel(startXYA, endXYA);
-	travel(endXYA, startXYA);
-//	resetEncoders();
 	pos_log.close();
 	return 0;
 }
 
+VectorXd controllerGetPos(){
+	return posXYA;
+}
 
+VectorXd controllerGetC(){
+	return cXYA;
+}
+
+int main(){
+	VectorXd startXYA(3), endXYA(3), coxAdjXYA(3);
+	coxAdjXYA << 0, 0, 0;
+	startXYA << 1215, 160, 0;
+	endXYA << 1215, 3500, 0;
+
+	lidarInit();
+	controllerInit(startXYA);
+	double dx = endXYA(0) - posXYA(0);
+	double dy = endXYA(1) - posXYA(1);
+	double a = endXYA(2);
+	pos_log << "###Positions after cox adjustment###" << endl;
+	pos_log << "X\tY\tA\tdX\tdY\tdA" << endl;
+	lidarCoxStart(posXYA);
+	for(int i = 0; i < 10; i++){
+		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, posXYA(2);
+		controllerTravel(endXYA+coxAdjXYA);
+		if(lidarCoxDone()){
+			coxAdjXYA = lidarGetCoxAdj();
+			cout << coxAdjXYA;
+			pos_log << posXYA(0) << "\t" << posXYA(1) << "\t" << posXYA(2) << "\t" << coxAdjXYA(0) << "\t" << coxAdjXYA(1) << "\t" << coxAdjXYA(2) << endl;
+			lidarCoxStart(posXYA);
+		}else{
+			coxAdjXYA << 0, 0, 0;
+		}
+	}
+	pos_log << "---END---" << endl;
+	endXYA << posXYA(0), posXYA(1), a;
+	controllerTravel(endXYA);
+	pos_log.close();
+	lidarStop();
+	return 0;
+}
 

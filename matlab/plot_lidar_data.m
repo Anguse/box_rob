@@ -1,7 +1,7 @@
 close all; clear all;
 
  A = load('../logs/lidar_measurements.txt');
-% B = load('../logs/lidar_positions.txt');
+% B = load('../logs/pretor_measurements.txt');
 % C = load('lidar_log.txt');
 %D = load('../logs/lidar_inliers.txt');
 
@@ -12,7 +12,9 @@ fig = figure;
 hax = axes;
 %X = cos(angle).*dist;
 %Y = sin(angle).*dist;
-X = A(1:10:end,1);
+A(:,1) = -(A(:,1)+180);
+A(:,2) = -(A(:,2)+180);
+X = -A(1:10:end,1)+180;
 Y = A(1:10:end,2);
 
 hold on;

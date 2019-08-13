@@ -15,6 +15,7 @@ control-c
 #include <string.h>
 #include <cmath>
 #include "velocity_profile.h"
+#include "constants.h"
 
 using namespace std;
 using Eigen::VectorXd;
@@ -25,40 +26,35 @@ VectorXd generateEncoderValues(double travelDistanceMM){
 
 	VectorXd positions(1);
 	// Setup
-	int encoder = 128;
-	int encoderCounter = 4;
-	double h = 0.01;
-	double gearReduction = 75.0/19.0;
-	double gearBoxRatio = 24.0/1.0*1.0/2.5;
-	double wheelCircumference = 42*M_PI;
-	double nbrPulsePerRevolution = encoder*encoderCounter*gearReduction;
-	double nbrPulsePerMM = nbrPulsePerRevolution*gearBoxRatio/wheelCircumference;
 
-	double maxAcc = 10000*2;
-	double maxDeAcc = -10000*2;
-	double maxSpeed = 2000*8;
-	double startPos = 0;
-	double endPos = travelDistanceMM*nbrPulsePerMM;
-	double breakPos = 0;
+	double maxAcc = 10000.0*2;
+	double maxDeAcc = -10000.0*2;
+	double maxSpeed = 2000.0*8;
+	double startPos = 0.0;
+	double endPos = travelDistanceMM*PULSES_PER_MM;
+	double breakPos = 0.0;
 	double pos = startPos;
-	double speed = 0;
-	double oldSpeed = 0;
+	double speed = 0.0;
+	double oldSpeed = 0.0;
 	int i = 0;
 
 	if(endPos > startPos){
+		cout << "pulses per mm: " << PULSES_PER_MM << "\n";
+		cout << "travel distance in mm: " << travelDistanceMM << "\n";
+		cout << "endpos: " << endPos << "\n";
 		while(endPos > pos && speed >= 0){
 			if(speed < maxSpeed && pos < (endPos + breakPos)){
-				speed = oldSpeed + maxAcc*h;
+				speed = oldSpeed + maxAcc*SAMPLE_TIME;
 				breakPos = speed*speed/(2*maxDeAcc);
 			}else if(pos > (endPos + breakPos)){
-				speed = oldSpeed + maxDeAcc*h;
+				speed = oldSpeed + maxDeAcc*SAMPLE_TIME;
 			}else{
 				speed = maxSpeed;
 			}
 			if(positions.size()==i){
 				positions.conservativeResize(positions.size()+1);
 			}
-			pos += speed*h;
+			pos += speed*SAMPLE_TIME;
 			positions(i) = pos;
 			oldSpeed = speed;
 			i++;

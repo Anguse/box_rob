@@ -10,7 +10,7 @@ receiving_2_file save the Lidar-data to a text-file. By run the Matlab-script 'p
 }
 
 to compile:
-$ g++ position_controller.cpp lidar.cpp velocity_profile.cpp -lpthread -lwiringPi -o main
+$ g++ position_controller.cpp lidar.cpp velocity_profile.cpp constants.h -lpthread -lwiringPi -o main
 
 to send via scp:
 $ scp position_controller.cpp velocity_profile.cpp lidar.cpp lidar.h velocity_profile.h  pi@192.168.43.44:/home/pi/Documents/rob_proj/spi

@@ -14,31 +14,21 @@
 #include <math.h>
 #include <fstream>
 #include <iostream>
+#include <pthread.h>
+#include "constants.h"
 
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
 using namespace std;
 
-/*####################
- * ### ROBOT SPECS ###
- * ###################*/
-int encoder = 128;
-int encoderCounter = 4;
-double gearReduction = 75.0/19.0;
-double gearBoxRatio = 24/1*1/2.5;
-double wheelCirc = 42.0*M_PI;
-double wheelBaseMM = 175.0;
-double pulsesPerRev = encoder*encoderCounter*gearReduction;
-double mmPerPulse = wheelCirc/(pulsesPerRev*gearBoxRatio);
 
-
-double turnAdjustmentFactor = 0.5;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this (58mm)
+double turnAdjustmentFactor = 1;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this (58mm)
 double sigmaEnc = 0.5/12;  			// TODO: value used from intelligent vehicles, find a more suitable value?
 double sigmaWb = 13.0;				// TODO: used from intelligent vehicles, find a more accurate uncertainty for wheel base?
 double sigmaL = sigmaEnc;			// Uncertainty in each wheel
 double sigmaR = sigmaEnc;
 double sigmaDd = (sigmaL+sigmaR)/4.0;
-double sigmaDa = (sigmaL+sigmaR)/pow(wheelBaseMM,2);
+double sigmaDa = (sigmaL+sigmaR)/pow(WHEELBASE_MM,2);
 /*#####################
  * ####################
  * ####################*/
@@ -52,6 +42,7 @@ unsigned char buffer[100];
 // Odometry
 VectorXd posXYA(3);		// Current position
 MatrixXd cXYA(3,3);		// Current uncertainty
+bool travel_done;
 
 // Log
 ofstream pos_log;
@@ -76,22 +67,25 @@ int updatePos(VectorXd Er, VectorXd El){
 
 	posAdjXYA.row(0) << posXYA(0), posXYA(1), posXYA(2);		// Adjusting 90 degrees for calculation?
 	cStorage.row(0) << cXYA(0), 0, 0, 0, cXYA(1), 0, 0, 0, cXYA(2);
-	Dr = mmPerPulse*Er;
-	Dl = mmPerPulse*El;
+	Dr = Er/PULSES_PER_MM;
+	Dl = El/PULSES_PER_MM;
 
 	if(n > 1){
 		for(int i = 1; i < n; i++){
 			dDr = Dr(i) - Dr(i-1);
 			dDl = Dl(i) - Dl(i-1);
 			dD = (dDr+dDl)/2;
-			dA = (dDr+dDl)/wheelBaseMM;
+			dA = (dDr+dDl)/WHEELBASE_MM;
 
 			dX = dD*cos(posAdjXYA(i-1,2)+dA/2);
 			dY = dD*sin(posAdjXYA(i-1,2)+dA/2);
 
-			posAdjXYA(i,0) = posAdjXYA(i-1,0) + (dDr+dDl)/2*sin(posAdjXYA(i-1,2)+(dDr-dDl)/(2*wheelBaseMM)); //Swapped sin and cos
-			posAdjXYA(i,1) = posAdjXYA(i-1,1) + (dDr+dDl)/2*cos(posAdjXYA(i-1,2)+(dDr-dDl)/(2*wheelBaseMM));
-			posAdjXYA(i,2) = fmod(posAdjXYA(i-1,2) + (dDr-dDl)/wheelBaseMM, 2*M_PI);
+			posAdjXYA(i,0) = posAdjXYA(i-1,0) + (dDr+dDl)/2*sin(posAdjXYA(i-1,2)+(dDr-dDl)/(2*WHEELBASE_MM)); //Swapped sin and cos
+			posAdjXYA(i,1) = posAdjXYA(i-1,1) + (dDr+dDl)/2*cos(posAdjXYA(i-1,2)+(dDr-dDl)/(2*WHEELBASE_MM));
+			posAdjXYA(i,2) = fmod(posAdjXYA(i-1,2) + (dDr-dDl)/WHEELBASE_MM, 2*M_PI);
+
+			// Log
+			pos_log << posAdjXYA(i,0) << "\t" << posAdjXYA(i,1) << "\t" << posAdjXYA(i,2) << "\n";
 
 			//Predict new uncertainty
 			Sx.row(0) << cStorage(i-1,0), cStorage(i-1,1), cStorage(i-1,2);
@@ -100,17 +94,17 @@ int updatePos(VectorXd Er, VectorXd El){
 			Sm << sigmaR*abs(dDr), 0,
 				  0, sigmaL*abs(dDl);
 
-			Js << 1, 0, -sin(posAdjXYA(i-1,2)-(dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2),
-				  0, 1,  cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2),
+			Js << 1, 0, -sin(posAdjXYA(i-1,2)-(dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2),
+				  0, 1,  cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2),
 				  0, 0,  1;
 
-			Jm << cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))/2 - (sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2))/(2*wheelBaseMM), cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))/2 + (sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2))/(2*wheelBaseMM),
-				  sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))/2 + (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2))/(2*wheelBaseMM), sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))/2 - (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl/2 + dDr/2))/(2*wheelBaseMM),
-				  1/wheelBaseMM,                                                                       															 -1/wheelBaseMM;
+			Jm << cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))/2 - (sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2))/(2*WHEELBASE_MM), cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))/2 + (sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2))/(2*WHEELBASE_MM),
+				  sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))/2 + (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2))/(2*WHEELBASE_MM), sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))/2 - (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2))/(2*WHEELBASE_MM),
+				  1/WHEELBASE_MM,                                                                       															 -1/WHEELBASE_MM;
 
-			Jb << -(sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl - dDr)*(dDl/2 + dDr/2))/(2*pow(wheelBaseMM,2)),
-				  (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*wheelBaseMM))*(dDl - dDr)*(dDl/2 + dDr/2))/(2*pow(wheelBaseMM,2)),
-				  (dDl - dDr)/pow(wheelBaseMM,2);
+			Jb << -(sin(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl - dDr)*(dDl/2 + dDr/2))/(2*pow(WHEELBASE_MM,2)),
+				  (cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl - dDr)*(dDl/2 + dDr/2))/(2*pow(WHEELBASE_MM,2)),
+				  (dDl - dDr)/pow(WHEELBASE_MM,2);
 
 			cAdjXYA = Js*Sx*Js.transpose() + Jm*Sm*Jm.transpose() + Jb*Sb*Jb.transpose();
 			cStorage.row(i) << cAdjXYA(0,0), cAdjXYA(0,1), cAdjXYA(0,2),
@@ -130,8 +124,8 @@ int updatePos(VectorXd Er, VectorXd El){
 }
 
 int sendEncoderValues(VectorXd Er, VectorXd El){
+
    int fd, result;
-   int Counter = 0;
    int Done = 0;
    int toggle = 1;
    int startPosL, startPosR;
@@ -145,7 +139,6 @@ int sendEncoderValues(VectorXd Er, VectorXd El){
    for(int i = 0; i < El.size(); i++){
 	   desPosR = -(Er(i) + startPosR);
 	   desPosL = El(i) + startPosL;
-	   Counter++;
 	   pWhite_Board_TX->Status = 1;
 	   pWhite_Board_TX->Set_Speed_M0 = 0.1*(desPosL - pWhite_Board_RX->Position_M0);
 	   pWhite_Board_TX->Set_Speed_M1 = 0.1*(desPosR - pWhite_Board_RX->Position_M1);
@@ -157,10 +150,13 @@ int sendEncoderValues(VectorXd Er, VectorXd El){
 	   pWhite_Board_TX->Heart_Beat = 1;
 	   memcpy(buffer,pWhite_Board_TX,32);
 	   result = wiringPiSPIDataRW(CHANNEL, buffer, 32);
+	   if(i < El.size()-1){
+		   updatePos(El.segment(i, 2), Er.segment(i, 2)); //Swapped El & Er
+	   }
 	   usleep(10000); // sleep in micro sek
    }
+//   updatePos(El, Er);
 //   cout << "Done!, endpos = (" << pWhite_Board_RX->Position_M0 << ",\t" << pWhite_Board_RX->Position_M1 << ")"<< endl;
-   updatePos(Er, El);
    return 0;
 }
 
@@ -239,7 +235,6 @@ int resetEncoders(){
 
 int controllerTravel(VectorXd endXYA){
 
-
 	VectorXd El1;	// Part1, 2 and 3 of encoder values
 	VectorXd Er1;
 	VectorXd El2;
@@ -251,25 +246,29 @@ int controllerTravel(VectorXd endXYA){
 	double dX = endXYA(0) - posXYA(0);
 	double dY = endXYA(1) - posXYA(1);
 	if(dY == 0){
-		dY = 0.00000000001;
+		dY = 0.000000000000000000000000001;
 	}
 	double dA = fmod(atan2(dX,dY)-posXYA(2),2*M_PI); //atan(y/x)
+	cout << "dA = " << dA << "\n";
 	double dD = sqrt(pow(dX,2)+pow(dY,2));
+	cout << "dD = " << dD << "\n";
 
 	// Rotate so there is a straight line from start to end
 	if(dA > 0 && abs(dA)>M_PI/64){
 		// Turn right
 		cout << "turn right in the start\n";
-		double dDl = abs(wheelBaseMM*dA);
+		double dDl = abs(WHEELBASE_MM*dA/2);
 		El1 = generateEncoderValues(dDl*turnAdjustmentFactor);
 		Er1 = -El1;
+//		Er1 = VectorXd::Zero(El1.size());
 		sendEncoderValues(Er1, El1);
 	}else if(dA < 0 && abs(dA)>M_PI/64){
 		// Turn left
 		cout << "turn left in the start\n";
-		double dDr = abs(wheelBaseMM*dA);
+		double dDr = abs(WHEELBASE_MM*dA/2);
 		Er1 = generateEncoderValues(dDr*turnAdjustmentFactor);
 		El1 = -Er1;
+//		El1 = VectorXd::Zero(Er1.size());
 		sendEncoderValues(Er1, El1);
 	}
 	// Travel distance dD
@@ -277,23 +276,23 @@ int controllerTravel(VectorXd endXYA){
 	Er2 = El2;
 	sendEncoderValues(Er2, El2);
 
-	// Rotate to desired angle
-	dA = endXYA(2) - dA;
-	if(dA > 0){
-		// Turn right
-		cout << "turn right in the end\n";
-		double dDl = abs(wheelBaseMM*dA);
-		El3 = generateEncoderValues(dDl*turnAdjustmentFactor);
-		Er3 = -El3;
-		sendEncoderValues(Er3, El3);
-	}else{
-		// Turn left
-		cout << "turn left in the end\n";
-		double dDr = abs(wheelBaseMM*dA);
-		Er3 = generateEncoderValues(dDr*turnAdjustmentFactor);
-		El3 = -Er3;
-		sendEncoderValues(Er3, El3);
-	}
+//	 Rotate to desired angle
+//	dA = endXYA(2) - dA;
+//	if(dA > 0){
+//		// Turn right
+//		cout << "turn right in the end\n";
+//		double dDl = abs(wheelBaseMM*dA);
+//		El3 = generateEncoderValues(dDl*turnAdjustmentFactor);
+//		Er3 = -El3;
+//		sendEncoderValues(Er3, El3);
+//	}else{
+//		// Turn left
+//		cout << "turn left in the end\n";
+//		double dDr = abs(wheelBaseMM*dA);
+//		Er3 = generateEncoderValues(dDr*turnAdjustmentFactor);
+//		El3 = -Er3;
+//		sendEncoderValues(Er3, El3);
+//	}
 	return 0;
 }
 
@@ -310,7 +309,6 @@ int controllerInit(VectorXd startXYA){
 			0, 0, pow(M_PI/180,2);
 	posXYA = startXYA;
 	resetEncoders();
-	pos_log.close();
 	return 0;
 }
 
@@ -322,35 +320,103 @@ VectorXd controllerGetC(){
 	return cXYA;
 }
 
-int main(){
-	VectorXd startXYA(3), endXYA(3), coxAdjXYA(3);
-	coxAdjXYA << 0, 0, 0;
-	startXYA << 1215, 160, 0;
-	endXYA << 1215, 3500, 0;
+void *travel_thread_start(void *arg){
 
-	lidarInit();
-	controllerInit(startXYA);
-	double dx = endXYA(0) - posXYA(0);
-	double dy = endXYA(1) - posXYA(1);
-	double a = endXYA(2);
-	pos_log << "###Positions after cox adjustment###" << endl;
-	pos_log << "X\tY\tA\tdX\tdY\tdA" << endl;
-	lidarCoxStart(posXYA);
-	for(int i = 0; i < 10; i++){
-		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, posXYA(2);
-		controllerTravel(endXYA+coxAdjXYA);
-		if(lidarCoxDone()){
-			coxAdjXYA = lidarGetCoxAdj();
-			cout << coxAdjXYA;
-			pos_log << posXYA(0) << "\t" << posXYA(1) << "\t" << posXYA(2) << "\t" << coxAdjXYA(0) << "\t" << coxAdjXYA(1) << "\t" << coxAdjXYA(2) << endl;
-			lidarCoxStart(posXYA);
-		}else{
-			coxAdjXYA << 0, 0, 0;
-		}
-	}
-	pos_log << "---END---" << endl;
-	endXYA << posXYA(0), posXYA(1), a;
+	VectorXd endXYA(3);
+	endXYA = *(VectorXd*)arg;
 	controllerTravel(endXYA);
+	travel_done = true;
+
+	return NULL;
+}
+
+int main(){
+	VectorXd startXYA(3), endXYA(3), midXYA(3), coxAdjXYA(3);
+	pthread_t travel;
+	coxAdjXYA << 0, 0, 0;
+	startXYA << 1215, 250, 0;
+	void *data_ptr;
+	travel_done = false;
+
+	lidarInit(NULL);
+	controllerInit(startXYA);
+
+	//####### Phase 1
+	endXYA << 1215, 2000, 0;
+	data_ptr = &endXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	lidarCoxStart(posXYA+coxAdjXYA, false);
+	while(!travel_done){
+		if(lidarCoxDone()){
+			coxAdjXYA += lidarGetCoxAdj();
+			lidarCoxStart(posXYA+coxAdjXYA, false);
+		}
+		usleep(100);
+	}
+	travel_done = false;
+	endXYA = posXYA+coxAdjXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	while(!travel_done)
+		usleep(100);
+	coxAdjXYA << 0, 0, 0;
+
+	//####### Phase 2
+	travel_done = false;
+	data_ptr = &startXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	lidarCoxStart(posXYA+coxAdjXYA, false);
+	while(!travel_done){
+		while(!lidarCoxDone()){
+			usleep(100);
+		}
+		coxAdjXYA += lidarGetCoxAdj();
+		lidarCoxStart(posXYA+coxAdjXYA, false);
+		usleep(100);
+	}
+	travel_done = false;
+	startXYA = posXYA+coxAdjXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	while(!travel_done)
+		usleep(100);
+	travel_done = false;
+//	double dx = endXYA(0) - posXYA(0);
+//	double dy = endXYA(1) - posXYA(1);
+//	double da = fmod(atan2(dx,dy)-posXYA(2),2*M_PI);
+//	double a = endXYA(2);
+//
+//
+//	for(int i = 0; i < 10; i++){
+//		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, da;
+//		pthread_create(&travel, NULL, travel_thread_start, (void*)endXYA);
+//		controllerTravel(endXYA+coxAdjXYA);
+//		if(lidarCoxDone()){
+//			coxAdjXYA = lidarGetCoxAdj();
+//			lidarCoxStart(posXYA, false);
+//		}else{
+//			coxAdjXYA << 0, 0, 0;
+//		}
+//	}
+//
+//	endXYA << 1215, 250, 0;
+//	dx = endXYA(0) - posXYA(0);
+//	dy = endXYA(1) - posXYA(1);
+//	da = fmod(atan2(dx,dy)-posXYA(2),2*M_PI);
+//	a = endXYA(2);
+//	lidarCoxStart(posXYA, false);
+//
+//	for(int i = 0; i < 10; i++){
+//		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, da;
+//		controllerTravel(endXYA+coxAdjXYA);
+//		if(lidarCoxDone()){
+//			coxAdjXYA = lidarGetCoxAdj();
+//			lidarCoxStart(posXYA, false);
+//		}else{
+//			coxAdjXYA << 0, 0, 0;
+//		}
+//	}
+//
+//	endXYA << posXYA(0), posXYA(1), a;
+//	controllerTravel(endXYA);
 	pos_log.close();
 	lidarStop();
 	return 0;

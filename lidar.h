@@ -12,9 +12,9 @@
 
 using Eigen::VectorXd;
 
-int lidarInit();
+int lidarInit(const char *filepath);
 int lidarStop();
-int lidarCoxStart(VectorXd currentPosXYA);
+int lidarCoxStart(VectorXd currentPosXYA, bool RFF);
 bool lidarCoxDone();
 VectorXd lidarGetCoxAdj();
 

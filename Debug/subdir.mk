@@ -6,20 +6,17 @@
 CPP_SRCS += \
 ../lidar.cpp \
 ../position_controller.cpp \
-../velocity_profile.cpp \
-../velocity_profile_new.cpp 
+../velocity_profile.cpp 
 
 OBJS += \
 ./lidar.o \
 ./position_controller.o \
-./velocity_profile.o \
-./velocity_profile_new.o 
+./velocity_profile.o 
 
 CPP_DEPS += \
 ./lidar.d \
 ./position_controller.d \
-./velocity_profile.d \
-./velocity_profile_new.d 
+./velocity_profile.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes

@@ -21,18 +21,6 @@ using Eigen::VectorXd;
 using Eigen::MatrixXd;
 using namespace std;
 
-
-double turnAdjustmentFactor = 1;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this (58mm)
-double sigmaEnc = 0.5/12;  			// TODO: value used from intelligent vehicles, find a more suitable value?
-double sigmaWb = 13.0;				// TODO: used from intelligent vehicles, find a more accurate uncertainty for wheel base?
-double sigmaL = sigmaEnc;			// Uncertainty in each wheel
-double sigmaR = sigmaEnc;
-double sigmaDd = (sigmaL+sigmaR)/4.0;
-double sigmaDa = (sigmaL+sigmaR)/pow(WHEELBASE_MM,2);
-/*#####################
- * ####################
- * ####################*/
-
 // SPI
 static const int CHANNEL = 1;
 TYPE_White_Board_RX *pWhite_Board_RX;
@@ -62,7 +50,7 @@ int updatePos(VectorXd Er, VectorXd El){
 	MatrixXd Jm(3,2);
 	VectorXd Jb(3);
 	MatrixXd Sm(2,2);
-	double Sb = sigmaWb;
+	double Sb = SIGMA_WB;
 	double dDr, dDl, dD, dA, dX, dY;
 
 	posAdjXYA.row(0) << posXYA(0), posXYA(1), posXYA(2);		// Adjusting 90 degrees for calculation?
@@ -91,8 +79,8 @@ int updatePos(VectorXd Er, VectorXd El){
 			Sx.row(0) << cStorage(i-1,0), cStorage(i-1,1), cStorage(i-1,2);
 			Sx.row(1) << cStorage(i-1,3), cStorage(i-1,4), cStorage(i-1,5);
 			Sx.row(2) << cStorage(i-1,6), cStorage(i-1,7), cStorage(i-1,8);
-			Sm << sigmaR*abs(dDr), 0,
-				  0, sigmaL*abs(dDl);
+			Sm << SIGMA_RW*abs(dDr), 0,
+				  0, SIGMA_LW*abs(dDl);
 
 			Js << 1, 0, -sin(posAdjXYA(i-1,2)-(dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2),
 				  0, 1,  cos(posAdjXYA(i-1,2) - (dDl - dDr)/(2*WHEELBASE_MM))*(dDl/2 + dDr/2),
@@ -123,7 +111,7 @@ int updatePos(VectorXd Er, VectorXd El){
 	return 0;
 }
 
-int sendEncoderValues(VectorXd Er, VectorXd El){
+int sendEncoderValues(VectorXd Er, VectorXd El, bool update_pos){
 
    int fd, result;
    int Done = 0;
@@ -150,12 +138,11 @@ int sendEncoderValues(VectorXd Er, VectorXd El){
 	   pWhite_Board_TX->Heart_Beat = 1;
 	   memcpy(buffer,pWhite_Board_TX,32);
 	   result = wiringPiSPIDataRW(CHANNEL, buffer, 32);
-	   if(i < El.size()-1){
+	   if(update_pos && i < El.size()-1){
 		   updatePos(El.segment(i, 2), Er.segment(i, 2)); //Swapped El & Er
 	   }
 	   usleep(10000); // sleep in micro sek
    }
-//   updatePos(El, Er);
 //   cout << "Done!, endpos = (" << pWhite_Board_RX->Position_M0 << ",\t" << pWhite_Board_RX->Position_M1 << ")"<< endl;
    return 0;
 }
@@ -258,23 +245,29 @@ int controllerTravel(VectorXd endXYA){
 		// Turn right
 		cout << "turn right in the start\n";
 		double dDl = abs(WHEELBASE_MM*dA/2);
-		El1 = generateEncoderValues(dDl*turnAdjustmentFactor);
+		El1 = generateEncoderValues(dDl);
 		Er1 = -El1;
-//		Er1 = VectorXd::Zero(El1.size());
-		sendEncoderValues(Er1, El1);
+		sendEncoderValues(Er1, El1, true);
+		// Turn adjustment, not recorded in odometry
+		El1 = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+		Er1 = -El1;
+		sendEncoderValues(Er1, El1, false);
 	}else if(dA < 0 && abs(dA)>M_PI/64){
 		// Turn left
 		cout << "turn left in the start\n";
 		double dDr = abs(WHEELBASE_MM*dA/2);
-		Er1 = generateEncoderValues(dDr*turnAdjustmentFactor);
+		Er1 = generateEncoderValues(dDr);
 		El1 = -Er1;
-//		El1 = VectorXd::Zero(Er1.size());
-		sendEncoderValues(Er1, El1);
+		sendEncoderValues(Er1, El1, true);
+		// Turn adjustment, not recorded in odometry
+		Er1 = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR);
+		El1 = -Er1;
+		sendEncoderValues(Er1, El1, false);
 	}
 	// Travel distance dD
 	El2 = generateEncoderValues(dD);
 	Er2 = El2;
-	sendEncoderValues(Er2, El2);
+	sendEncoderValues(Er2, El2, true);
 
 //	 Rotate to desired angle
 //	dA = endXYA(2) - dA;
@@ -324,7 +317,11 @@ void *travel_thread_start(void *arg){
 
 	VectorXd endXYA(3);
 	endXYA = *(VectorXd*)arg;
+
+
 	controllerTravel(endXYA);
+
+
 	travel_done = true;
 
 	return NULL;
@@ -348,7 +345,7 @@ int main(){
 	lidarCoxStart(posXYA+coxAdjXYA, false);
 	while(!travel_done){
 		if(lidarCoxDone()){
-			coxAdjXYA += lidarGetCoxAdj();
+			coxAdjXYA -= lidarGetCoxAdj();
 			lidarCoxStart(posXYA+coxAdjXYA, false);
 		}
 		usleep(100);
@@ -369,7 +366,7 @@ int main(){
 		while(!lidarCoxDone()){
 			usleep(100);
 		}
-		coxAdjXYA += lidarGetCoxAdj();
+		coxAdjXYA -= lidarGetCoxAdj();
 		lidarCoxStart(posXYA+coxAdjXYA, false);
 		usleep(100);
 	}

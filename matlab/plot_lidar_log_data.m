@@ -1,7 +1,7 @@
 clear all; close all;
 
 % A = load('/home/harald/ws/scan_match/logs/pos_controller/pos_log.txt');
-A = load('logs/lidar_positions.txt');
+A = load('logs/lidar_inliers.txt');
 % A = load('../logs/lidar_inliers.txt');
 
 

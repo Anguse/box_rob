@@ -24,5 +24,40 @@ const double PULSES_PER_REVOLUTION = ENCODER*ENCODER_COUNTER*GEAR_REDUCTION;  //
 const double MM_PER_PULSE = WHEEL_CIRC/(PULSES_PER_REVOLUTION*GEARBOX_RATIO); //
 const double PULSES_PER_MM = PULSES_PER_REVOLUTION*GEARBOX_RATIO/WHEEL_CIRC;  // 147
 
+const double TURN_ADJUSTMENT_FACTOR = 0.112;	// Factor to counter slippage caused by the coaster wheel TODO adjust odometry wrt. this (58mm)
+const double SIGMA_ENCODER = 0.5/12;  			// TODO: value used from intelligent vehicles, find a more suitable value?
+const double SIGMA_WB = 13.0;				// TODO: used from intelligent vehicles, find a more accurate uncertainty for wheel base?
+const double SIGMA_LW = SIGMA_ENCODER;			// Uncertainty in each wheel
+const double SIGMA_RW = SIGMA_ENCODER;
+const double SIGMA_DD = (SIGMA_LW+SIGMA_RW)/4.0;
+const double SIGMA_DA = (SIGMA_LW+SIGMA_RW)/pow(WHEELBASE_MM,2);
+
+/*######################
+ * ## SENSOR MOUNTING ##
+  ######################*/
+const double ALPHA = 0.0;					// X-displacement
+const double BETA = 0.0;					// Y-displacement
+const double GAMMA = M_PI/2 - 4*M_PI/180;	// angular displacement
+
+
+/*#####################
+ * ##### LIDAR ########
+ * ####################*/
+#define MIN_SCANS 500
+#define SCAN_TIMEOUT_MS 10000
+#define RECEIVE_PORT 9888
+#define SEND_PORT 9887
+#define HOST "127.0.0.1"
+
+/*####################
+ *####### COX ########
+ *#################### */
+const int MAX_ITERATIONS = 30;				// Maximum iterations
+const int MIN_INLIERS = MIN_SCANS/10;			// Minimum requiered inliers
+const double INLIER_THRESHOLD = 20;			// Maximum inlier distance
+const double CONVERGENCE_THRESHOLD = 5;		// Treshold distance for convergence
+const double CONVERGENCE_ANGULAR_THRESHOLD = 0.3*M_PI/180;
+const double DISPLACEMENT_LIMIT = 100;		// Maximum allowed displacement distance
+const double ANGLE_CHANGE_LIMIT = 0.1*M_PI/2;
 
 #endif /* CONSTANTS_H_ */

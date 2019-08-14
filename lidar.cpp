@@ -21,14 +21,7 @@
 #include <math.h>
 #include <cstdlib>
 #include "lidar.h"
-
-
-#define RECEIVE_PORT 9888
-#define SEND_PORT 9887
-#define HOST "127.0.0.1"
-
-#define MIN_SCANS 500
-#define SCAN_TIMEOUT_MS 10000
+#include "constants.h"
 
 using Eigen::MatrixXd;
 using Eigen::VectorXd;
@@ -53,10 +46,6 @@ bool cox_done;
 // Logging
 ifstream inputFile;
 ofstream adjustments, measurements, positions, prerot_measurements, scan_inliers, raw;
-
-double alfa;
-double beta;
-double gamma_a;
 
 int start_lidar(){
 	struct sockaddr_in serv_addr;
@@ -234,16 +223,11 @@ void *cox_linefit(void *ptr){
 	int iterations = 0;
 	int nr_of_lines = line_map.cols();
 
-	int max_iterations = 50;				// Maximum iterations
-	int min_inliers = MIN_SCANS/10;			// Minimum requiered inliers
-	double inlier_threshold = 250;			// Maximum inlier distance
-	double convergence_threshold = 5;		// Treshold distance for convergence
-	double displacement_limit = 100;		// Maximum allowed displacement distance
-	double angle_change_limit = M_PI/2;
-
 	double ddx = 0;					// Adjustment to initial position
 	double ddy = 0;
 	double dda = 0;
+
+	int inlier_threshold_offset = 0;
 
 	MatrixXd U(nr_of_lines, 2);		// Unit vectors
 	VectorXd R(nr_of_lines);		// Unit vectors projected on corresponding line
@@ -266,8 +250,8 @@ void *cox_linefit(void *ptr){
 
 	rot << 0, -1,
 		   1, 0;
-	rob_rot << cos(gamma_a), -sin(gamma_a), alfa,
-			   sin(gamma_a), cos(gamma_a), 	beta,
+	rob_rot << cos(GAMMA), -sin(GAMMA), ALPHA,
+			   sin(GAMMA), cos(GAMMA), 	BETA,
 			   0,		   0, 		    1;
 
 	// Get unit vectors of all lines
@@ -349,7 +333,7 @@ void *cox_linefit(void *ptr){
 //				target_index = fmod(target_index+1, 4);
 //				cout << "unit vector: " << U.row(target_index) << "\n";
 			}
-			if((target<inlier_threshold)/*&&sqrt(pow((Xw(0)-midpoint(target_index,0)),2))+sqrt(pow((Xw(1)-midpoint(target_index,1)),2))<=linelength(target_index)*/){
+			if((target<INLIER_THRESHOLD)/*&&sqrt(pow((Xw(0)-midpoint(target_index,0)),2))+sqrt(pow((Xw(1)-midpoint(target_index,1)),2))<=linelength(target_index)*/){
 				inliers++;
 				X1.conservativeResize(inliers);		//Time consuming...
 				X2.conservativeResize(inliers);
@@ -374,7 +358,7 @@ void *cox_linefit(void *ptr){
 			B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
 			n = A.size();
 //		    S2 = ((targets-A*B).transpose()*(targets-A*B))/(n-4); // Calculate the variance
-//		    C = S2*(inv(A'*A));
+//		    C = S2*((A.transpose()*A).inverse());
 
 			// Add latest contribution to the overall congruence
 			dx = B(0);
@@ -391,7 +375,7 @@ void *cox_linefit(void *ptr){
 			state(2) = fmod(state(2)+da,2*M_PI);
 		}
 		// If adjustment is too big we are on the wrong track, discard these adjustments
-		if(abs(ddx)>displacement_limit || (abs(ddy)>displacement_limit) || (abs(dda) >angle_change_limit)){
+		if(abs(ddx)>DISPLACEMENT_LIMIT || (abs(ddy)>DISPLACEMENT_LIMIT) || (abs(dda) >ANGLE_CHANGE_LIMIT)){
 			ddx = 0;
 			ddy = 0;
 			dda = 0;
@@ -406,7 +390,7 @@ void *cox_linefit(void *ptr){
 			break;
 		}
 		// Check if process has converged
-		if((sqrt(pow(dx,2)+pow(dy,2)) < convergence_threshold)&&(abs(da<0.1*M_PI/180))){
+		if((sqrt(pow(dx,2)+pow(dy,2)) < CONVERGENCE_THRESHOLD)&&(abs(da<CONVERGENCE_ANGULAR_THRESHOLD))){
 			finished = true;
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
@@ -417,7 +401,7 @@ void *cox_linefit(void *ptr){
 			cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
 			break;
 		}
-		if(iterations > max_iterations){
+		if(iterations > MAX_ITERATIONS){
 			finished = true;
 			cox_adjustment(0) = 0;
 			cox_adjustment(1) = 0;
@@ -428,9 +412,10 @@ void *cox_linefit(void *ptr){
 			std::cout << "Failed to find convergence\n";
 			break;
 		}
-		if(inliers < min_inliers){
+		if(inliers < MIN_INLIERS+inlier_threshold_offset){
 			cout << "Too few inliers, increasing threshold" << "\n";
-			inlier_threshold += 5;
+			inlier_threshold_offset += 5;
+			iterations++;
 			continue;
 		}
 		targets.setZero(1);
@@ -527,11 +512,6 @@ int lidarInit(const char* filepath){
 	line_map.row(2) = line;
 	line << 2430, 0, 0, 0;
 	line_map.row(3) = line;
-
-	// Robot offset
-	alfa = 0.0;
-	beta = 0.0;
-	gamma_a = M_PI/2 - 4*M_PI/180;
 
 	adjustments.open("logs/lidar_adjustment.txt", ofstream::out | ofstream::trunc);
 	measurements.open("logs/lidar_measurements.txt", ofstream::out | ofstream::trunc);

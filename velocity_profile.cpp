@@ -39,9 +39,6 @@ VectorXd generateEncoderValues(double travelDistanceMM){
 	int i = 0;
 
 	if(endPos > startPos){
-		cout << "pulses per mm: " << PULSES_PER_MM << "\n";
-		cout << "travel distance in mm: " << travelDistanceMM << "\n";
-		cout << "endpos: " << endPos << "\n";
 		while(endPos > pos && speed >= 0){
 			if(speed < maxSpeed && pos < (endPos + breakPos)){
 				speed = oldSpeed + maxAcc*SAMPLE_TIME;

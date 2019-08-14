@@ -37,12 +37,13 @@ const double SIGMA_DA = (SIGMA_LW+SIGMA_RW)/pow(WHEELBASE_MM,2);
   ######################*/
 const double ALPHA = 0.0;					// X-displacement
 const double BETA = 0.0;					// Y-displacement
-const double GAMMA = M_PI/2 - 4*M_PI/180;	// angular displacement
+const double GAMMA = M_PI/2 + 3.5*M_PI/180;	// angular displacement
 
 
 /*#####################
  * ##### LIDAR ########
  * ####################*/
+const double SCAN_ANGLE_ADJUSTMENT = -M_PI/180;    // Adjustment angle to radians and invert since rotation of lidar is clockwise
 #define MIN_SCANS 500
 #define SCAN_TIMEOUT_MS 10000
 #define RECEIVE_PORT 9888
@@ -53,11 +54,11 @@ const double GAMMA = M_PI/2 - 4*M_PI/180;	// angular displacement
  *####### COX ########
  *#################### */
 const int MAX_ITERATIONS = 30;				// Maximum iterations
-const int MIN_INLIERS = MIN_SCANS/10;			// Minimum requiered inliers
-const double INLIER_THRESHOLD = 20;			// Maximum inlier distance
+const int MIN_INLIERS = MIN_SCANS/20;		// Minimum requiered inliers
+const double INLIER_THRESHOLD = 5;			// Maximum inlier distance
 const double CONVERGENCE_THRESHOLD = 5;		// Treshold distance for convergence
-const double CONVERGENCE_ANGULAR_THRESHOLD = 0.3*M_PI/180;
-const double DISPLACEMENT_LIMIT = 100;		// Maximum allowed displacement distance
-const double ANGLE_CHANGE_LIMIT = 0.1*M_PI/2;
+const double CONVERGENCE_ANGULAR_THRESHOLD = 0.1*M_PI/180;
+const double DISPLACEMENT_LIMIT = 350;		// Maximum allowed displacement distance
+const double ANGLE_CHANGE_LIMIT = 0.7*M_PI/2;
 
 #endif /* CONSTANTS_H_ */

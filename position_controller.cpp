@@ -345,7 +345,7 @@ int main(){
 	lidarCoxStart(posXYA+coxAdjXYA, false);
 	while(!travel_done){
 		if(lidarCoxDone()){
-			coxAdjXYA -= lidarGetCoxAdj();
+			coxAdjXYA += lidarGetCoxAdj();
 			lidarCoxStart(posXYA+coxAdjXYA, false);
 		}
 		usleep(100);
@@ -366,7 +366,7 @@ int main(){
 		while(!lidarCoxDone()){
 			usleep(100);
 		}
-		coxAdjXYA -= lidarGetCoxAdj();
+		coxAdjXYA += lidarGetCoxAdj();
 		lidarCoxStart(posXYA+coxAdjXYA, false);
 		usleep(100);
 	}

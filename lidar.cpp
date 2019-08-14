@@ -199,7 +199,7 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			quality = (int)data[0]>>2;
 			angle = (((int)data[1]>>1) + ((int)data[2]<<8))>>7;
 			distance = (((int)data[3]) + ((int)data[4]<<8))>>2;
-			one_scan << quality, fmod((-angle*M_PI/180),M_PI*2), distance;
+			one_scan << quality, fmod(angle*SCAN_ANGLE_ADJUSTMENT,M_PI*2), distance;
 			if(quality != 1){
 				all_scans.row(number_of_scans) = one_scan;
 				raw << one_scan.transpose() << "\n";
@@ -557,8 +557,7 @@ int lidarCoxStart(VectorXd currentPosXYA, bool RFF){
 //			last_scan(i,0) = stod(readval, &sz);
 //			getline(inputFile, readval, ' ');			// Angles
 //			last_scan(i,1) = stod(readval, &sz);
-//			last_scan(i,1) = last_scan(i,1)*M_PI/180;	// Degrees to radians
-//			last_scan(i,1) = -last_scan(i,1);	// Negative since the lidar rotates clockwise
+//			last_scan(i,1) = last_scan(i,1)*SCAN_ANGLE_ADJUSTMENT;	// Degrees to radians
 //			last_scan(i,1) = fmod(last_scan(i,1),2*M_PI);
 //			getline(inputFile, readval, ' ');			// Distance
 //			last_scan(i,2) = stod(readval, &sz);

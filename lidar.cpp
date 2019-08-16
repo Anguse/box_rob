@@ -41,7 +41,10 @@ MatrixXd line_map(4,4);
 MatrixXd last_scan(MIN_SCANS, 3);
 VectorXd cox_adjustment(3);			// Adjustment calculated by cox
 VectorXd coxPosXYA(3);				// Current position of robot used when calculating cox
+MatrixXd coxVariance(3,3);
 bool cox_done;
+
+
 
 // Logging
 ifstream inputFile;
@@ -202,7 +205,7 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			one_scan << quality, fmod(angle*SCAN_ANGLE_ADJUSTMENT,M_PI*2), distance;
 			if(quality != 1){
 				all_scans.row(number_of_scans) = one_scan;
-				raw << one_scan.transpose() << "\n";
+				raw << one_scan(0) << "\t" << one_scan(1) << "\t" << one_scan(2) << "\n";
 				number_of_scans++;
 			}
 		}
@@ -246,6 +249,8 @@ void *cox_linefit(void *ptr){
 	MatrixXd midpoint(nr_of_lines,2);
 	VectorXd linelength(nr_of_lines);
 
+	double angle, dist, x, y;
+
 	state << coxPosXYA(0), coxPosXYA(1), coxPosXYA(2);		// Initial position
 
 	rot << 0, -1,
@@ -283,11 +288,22 @@ void *cox_linefit(void *ptr){
 		linelength(kk) = (L1.row(0)+L1.row(1)).norm();
 	}
 
+	for(int ii = 0; ii < MIN_SCANS; ii++){
+		angle = last_scan(ii, 1);
+		dist = last_scan(ii, 2);
+		x = cos(angle)*dist;
+		y = sin(angle)*dist;
+		Xw << x, y, 1;
+		Xw = rob_rot*Xw;
+		Xw = world_rot*Xw;
+		v << Xw(0), Xw(1);
+		measurements << v(0) << "\t" << v(1) << "\n";
+	}
+
 	// Main loop
 	bool finished = false;
 	while(!finished){
 
-		double angle, dist, x, y;
 	    double dx, dy, da;
 		double target;
 	    int n;
@@ -296,6 +312,7 @@ void *cox_linefit(void *ptr){
 
 	    VectorXd B(3);
 	    MatrixXd S2(3,3);
+	    MatrixXd C;
 
 		world_rot << cos(state(2)), -sin(state(2)), state(0),
 					 sin(state(2)), cos(state(2)),  state(1),
@@ -310,6 +327,7 @@ void *cox_linefit(void *ptr){
 			Xw = rob_rot*Xw;
 			Xw = world_rot*Xw;
 			Xww.row(ii) = Xw;
+			v << Xw(0), Xw(1);
 		}
 		vm << Xww.col(0).array().mean(), Xww.col(1).array().mean();
 
@@ -323,17 +341,16 @@ void *cox_linefit(void *ptr){
 			Xw = rob_rot*Xw;
 			Xw = world_rot*Xw;
 			v << Xw(0), Xw(1);
-			measurements << v.transpose() << "\n";
 			for(int kk = 0; kk < nr_of_lines; kk++){
 				yy(kk) = abs(R(kk)-(U.row(kk).dot(v)));
 			}
 			target = yy.minCoeff(&target_index);
 			if(ii == 9){
-				cout << "index: " << target_index << ", distance: " << target << "\n";
+//				cout << "index: " << target_index << ", distance: " << target << "\n";
 //				target_index = fmod(target_index+1, 4);
 //				cout << "unit vector: " << U.row(target_index) << "\n";
 			}
-			if((target<INLIER_THRESHOLD)/*&&sqrt(pow((Xw(0)-midpoint(target_index,0)),2))+sqrt(pow((Xw(1)-midpoint(target_index,1)),2))<=linelength(target_index)*/){
+			if((target<INLIER_THRESHOLD+inlier_threshold_offset)/*&&sqrt(pow((Xw(0)-midpoint(target_index,0)),2))+sqrt(pow((Xw(1)-midpoint(target_index,1)),2))<=linelength(target_index)*/){
 				inliers++;
 				X1.conservativeResize(inliers);		//Time consuming...
 				X2.conservativeResize(inliers);
@@ -350,30 +367,44 @@ void *cox_linefit(void *ptr){
 	            scan_inliers << v.transpose() << "\n";
 			}
 		}
-		if(inliers > 10){
-			MatrixXd A(inliers, 3);
-			A.col(0) = X1;
-			A.col(1) = X2;
-			A.col(2) = X3;
-			B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
-			n = A.size();
-//		    S2 = ((targets-A*B).transpose()*(targets-A*B))/(n-4); // Calculate the variance
-//		    C = S2*((A.transpose()*A).inverse());
-
-			// Add latest contribution to the overall congruence
-			dx = B(0);
-			dy = B(1);
-			da = B(2);
-
-			ddx = ddx + dx;
-			ddy = ddy + dy;
-			dda = fmod(dda+da,2*M_PI);
-
-		    // Update the position
-			state(0) += dx;
-			state(1) += dy;
-			state(2) = fmod(state(2)+da,2*M_PI);
+		if(iterations > MAX_ITERATIONS){
+			finished = true;
+			cox_adjustment(0) = 0;
+			cox_adjustment(1) = 0;
+			cox_adjustment(2) = 0;
+			cox_done = true;
+			std::cout << "Failed to find convergence\n";
+			break;
 		}
+		if(inliers < MIN_INLIERS){
+			iterations++;
+			inlier_threshold_offset += 5;
+			cout << "not enough inliers, increasing threshold\n";
+			continue;
+		}
+		MatrixXd A(inliers, 3);
+		A.col(0) = X1;
+		A.col(1) = X2;
+		A.col(2) = X3;
+		B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
+		n = A.size();
+		S2 = ((targets-(A*B)).transpose()*(targets-(A*B)))/((double)(n-4.0)); // Calculate the variance
+		C = S2(0)*((A.transpose()*A).inverse());
+
+		// Add latest contribution to the overall congruence
+		dx = B(0);
+		dy = B(1);
+		da = B(2);
+
+		ddx = ddx + dx;
+		ddy = ddy + dy;
+		dda = fmod(dda+da,2*M_PI);
+
+		// Update the position
+		state(0) += dx;
+		state(1) += dy;
+		state(2) = fmod(state(2)+da,2*M_PI);
+
 		// If adjustment is too big we are on the wrong track, discard these adjustments
 		if(abs(ddx)>DISPLACEMENT_LIMIT || (abs(ddy)>DISPLACEMENT_LIMIT) || (abs(dda) >ANGLE_CHANGE_LIMIT)){
 			ddx = 0;
@@ -382,9 +413,7 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
-//			pthread_mutex_lock(&coxlock);
 			cox_done = true;
-//			pthread_mutex_unlock(&coxlock);
 			finished = true;
 			std::cout << "Too big adjustment\n";
 			break;
@@ -395,28 +424,10 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
-//			pthread_mutex_lock(&coxlock);
+			coxVariance = C;
 			cox_done = true;
-//			pthread_mutex_unlock(&coxlock);
 			cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
 			break;
-		}
-		if(iterations > MAX_ITERATIONS){
-			finished = true;
-			cox_adjustment(0) = 0;
-			cox_adjustment(1) = 0;
-			cox_adjustment(2) = 0;
-//			pthread_mutex_lock(&coxlock);
-			cox_done = true;
-//			pthread_mutex_unlock(&coxlock);
-			std::cout << "Failed to find convergence\n";
-			break;
-		}
-		if(inliers < MIN_INLIERS+inlier_threshold_offset){
-			cout << "Too few inliers, increasing threshold" << "\n";
-			inlier_threshold_offset += 5;
-			iterations++;
-			continue;
 		}
 		targets.setZero(1);
 		X1.setZero(1);
@@ -426,77 +437,6 @@ void *cox_linefit(void *ptr){
 	}
 	return NULL;
 }
-
-// For debugging purposes
-//int main_loop(){
-//
-//	// Interrupt handling to make sure lidar stops on SIGINT
-//	struct sigaction sigIntHandler;
-//	sigIntHandler.sa_handler = interrupt_handler;
-//	sigemptyset(&sigIntHandler.sa_mask);
-//	sigIntHandler.sa_flags = 0;
-//	sigaction(SIGINT, &sigIntHandler, NULL);
-//
-//	pthread_mutex_init(&coxlock, NULL);
-//
-//	// Construct map
-//	VectorXd line(4);
-//	line << 0, 0, 0, 3635;			//x1, y1, x2, y2
-//	line_map.row(0) = line;
-//	line << 0, 3640, 2430, 3640;
-//	line_map.row(1) = line;
-//	line << 2430, 3640, 2430, 0;
-//	line_map.row(2) = line;
-//	line << 2430, 0, 0, 0;
-//	line_map.row(3) = line;
-//
-//	// Robot offset
-//	alfa = 0.0;
-//	beta = 0.0;
-//	gamma_a = 0.0;
-//
-//	adjustments.open("logs/lidar_adjustment.txt", ofstream::out | ofstream::trunc);
-//	measurements.open("logs/lidar_measurements.txt", ofstream::out | ofstream::trunc);
-//	prerot_measurements.open("logs/pretor_measurements.txt", ofstream::out | ofstream::trunc);
-//	positions.open("logs/lidar_positions.txt", ofstream::out | ofstream::trunc);
-//	scan_inliers.open("logs/lidar_inliers.txt", ofstream::out | ofstream::trunc);
-//
-//	inputFile.open("logs/lidar_log_with_odometry.txt");
-//	cox_done = false;
-//
-//	string readval;
-//	string::size_type sz;
-//	inputFile.open("logs/lidar_log_with_odometry.txt");
-//	VectorXd pos(3), adj(3);
-//	adj << 0, 0, 0;
-//	pos << 1215, 160, 0;
-//	while(!inputFile.eof()){
-//		for(int i = 0; i < MIN_SCANS; i++){
-//			getline(inputFile, readval, '\t');
-//			getline(inputFile, readval, '\t');			// Quality
-//			last_scan(i,0) = stod(readval,&sz);
-//			getline(inputFile, readval, '\t');			// Angles
-//			last_scan(i,1) = stod(readval,&sz);
-//			last_scan(i,1) = last_scan(i,1)*M_PI/180;	// Degrees to radians
-//			last_scan(i,1) = -last_scan(i,1)+M_PI/2;	// Negative since the lidar rotates clockwise
-//			last_scan(i,1) = fmod(last_scan(i,1),2*M_PI);
-//			getline(inputFile, readval, '\t');			// Distance
-//			last_scan(i,2) = stod(readval,&sz);
-//		}
-//		coxPosXYA = pos;
-//		cox_done = false;
-//		pthread_create(&match, NULL, cox_linefit, (void*)NULL);
-//		while(1){
-//			if(lidarCoxDone()){
-//				adj = lidarGetCoxAdj();
-//				pos += adj;
-//				break;
-//			}
-//		}
-//	}
-//	lidarStop();
-//	exit(1);
-//}
 
 int lidarInit(const char* filepath){
 
@@ -515,7 +455,7 @@ int lidarInit(const char* filepath){
 
 	adjustments.open("logs/lidar_adjustment.txt", ofstream::out | ofstream::trunc);
 	measurements.open("logs/lidar_measurements.txt", ofstream::out | ofstream::trunc);
-	prerot_measurements.open("logs/pretor_measurements.txt", ofstream::out | ofstream::trunc);
+	prerot_measurements.open("logs/prerot_measurements.txt", ofstream::out | ofstream::trunc);
 	positions.open("logs/lidar_positions.txt", ofstream::out | ofstream::trunc);
 	scan_inliers.open("logs/lidar_inliers.txt", ofstream::out | ofstream::trunc);
 	raw.open("logs/lidar_raw.txt", ofstream::out | ofstream::trunc);
@@ -543,6 +483,7 @@ int lidarStop(){
 }
 
 int lidarCoxStart(VectorXd currentPosXYA, bool RFF){
+
 	coxPosXYA = currentPosXYA;
 	cox_done = false;
 	if(!RFF){
@@ -585,4 +526,8 @@ VectorXd lidarGetCoxAdj(){
 		VectorXd n(3);
 		return n;
 	}
+}
+
+MatrixXd lidarGetVariance(){
+	return coxVariance;
 }

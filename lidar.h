@@ -9,13 +9,16 @@
 #define LIDAR_H_
 
 #include <eigen3/Eigen/Dense>
+#include <eigen3/Eigen/LU>
 
 using Eigen::VectorXd;
+using Eigen::MatrixXd;
 
 int lidarInit(const char *filepath);
 int lidarStop();
 int lidarCoxStart(VectorXd currentPosXYA, bool RFF);
 bool lidarCoxDone();
 VectorXd lidarGetCoxAdj();
+MatrixXd lidarGetVariance();
 
 #endif /* LIDAR_H_ */

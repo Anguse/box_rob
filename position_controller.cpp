@@ -28,12 +28,12 @@ TYPE_White_Board_TX *pWhite_Board_TX;
 unsigned char buffer[100];
 
 // Odometry
-VectorXd posXYA(3);		// Current position
-MatrixXd cXYA(3,3);		// Current uncertainty
+VectorXd posXYA(3);					// Current position
+MatrixXd odometryVariance(3,3);		// Current uncertainty
 bool travel_done;
 
 // Log
-ofstream pos_log;
+ofstream odometry;
 
 int updatePos(VectorXd Er, VectorXd El){
 
@@ -54,7 +54,7 @@ int updatePos(VectorXd Er, VectorXd El){
 	double dDr, dDl, dD, dA, dX, dY;
 
 	posAdjXYA.row(0) << posXYA(0), posXYA(1), posXYA(2);		// Adjusting 90 degrees for calculation?
-	cStorage.row(0) << cXYA(0), 0, 0, 0, cXYA(1), 0, 0, 0, cXYA(2);
+	cStorage.row(0) << odometryVariance(0), 0, 0, 0, odometryVariance(1), 0, 0, 0, odometryVariance(2);
 	Dr = Er/PULSES_PER_MM;
 	Dl = El/PULSES_PER_MM;
 
@@ -73,7 +73,7 @@ int updatePos(VectorXd Er, VectorXd El){
 			posAdjXYA(i,2) = fmod(posAdjXYA(i-1,2) + (dDr-dDl)/WHEELBASE_MM, 2*M_PI);
 
 			// Log
-			pos_log << posAdjXYA(i,0) << "\t" << posAdjXYA(i,1) << "\t" << posAdjXYA(i,2) << "\n";
+			odometry << posAdjXYA(i,0) << "\t" << posAdjXYA(i,1) << "\t" << posAdjXYA(i,2) << "\n";
 
 			//Predict new uncertainty
 			Sx.row(0) << cStorage(i-1,0), cStorage(i-1,1), cStorage(i-1,2);
@@ -99,7 +99,7 @@ int updatePos(VectorXd Er, VectorXd El){
 							   cAdjXYA(1,0), cAdjXYA(1,1), cAdjXYA(1,2),
 							   cAdjXYA(2,0), cAdjXYA(2,1), cAdjXYA(2,2);
 		}
-		cXYA = cAdjXYA;
+		odometryVariance = cAdjXYA;
 		posXYA = posAdjXYA.row(posAdjXYA.rows()-1);
 	}
 //	pos_log << "###Movement values in mm###" << endl;
@@ -220,7 +220,53 @@ int resetEncoders(){
 	cout << "Done!\n";
 }
 
-int controllerTravel(VectorXd endXYA){
+int controllerRotate(double A){
+
+	VectorXd El;
+	VectorXd Er;
+	double dA = A - posXYA(2);
+	if(dA > 0){
+		// Turn right
+		double dDl = abs(WHEELBASE_MM*dA);
+		El = generateEncoderValues(dDl);
+		Er = -El;
+		sendEncoderValues(Er, El, true);
+
+		El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+		Er = -El;
+		sendEncoderValues(Er, El, false);
+	}else{
+		// Turn left
+		double dDr = abs(WHEELBASE_MM*dA);
+		Er = generateEncoderValues(dDr);
+		El = -Er;
+		sendEncoderValues(Er, El, true);
+
+		Er = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR);
+		El = -Er;
+		sendEncoderValues(Er, El, false);
+	}
+	return 0;
+}
+
+int controllerRotateDegrees(double dA){
+
+	VectorXd El;
+	VectorXd Er;
+
+	// Turn right
+	double dDl = abs(WHEELBASE_MM*dA);
+	El = generateEncoderValues(dDl);
+	Er = -El;
+	sendEncoderValues(Er, El, true);
+
+	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+	Er = -El;
+	sendEncoderValues(Er, El, false);
+	return 0;
+}
+
+int controllerTravel(VectorXd endXYA, bool reversed){
 
 	VectorXd El1;	// Part1, 2 and 3 of encoder values
 	VectorXd Er1;
@@ -235,11 +281,21 @@ int controllerTravel(VectorXd endXYA){
 	if(dY == 0){
 		dY = 0.000000000000000000000000001;
 	}
-	double dA = fmod(atan2(dX,dY)-posXYA(2),2*M_PI); //atan(y/x)
+	double dA = atan2(dX,dY); //atan(y/x)
+	cout << dA;
+	dA -= posXYA(2);
+	dA = fmod(dA, 2*M_PI);
 	cout << "dA = " << dA << "\n";
 	double dD = sqrt(pow(dX,2)+pow(dY,2));
 	cout << "dD = " << dD << "\n";
-
+	if(reversed)
+		dA += M_PI;
+	if(abs(dA)>M_PI){
+		if(dA < 0)
+			dA = (2*M_PI+dA);
+		else
+			dA = -(2*M_PI-dA);
+	}
 	// Rotate so there is a straight line from start to end
 	if(dA > 0 && abs(dA)>M_PI/64){
 		// Turn right
@@ -266,38 +322,24 @@ int controllerTravel(VectorXd endXYA){
 	}
 	// Travel distance dD
 	El2 = generateEncoderValues(dD);
+	if(reversed)
+		El2 = -El2;
 	Er2 = El2;
 	sendEncoderValues(Er2, El2, true);
 
-//	 Rotate to desired angle
-//	dA = endXYA(2) - dA;
-//	if(dA > 0){
-//		// Turn right
-//		cout << "turn right in the end\n";
-//		double dDl = abs(wheelBaseMM*dA);
-//		El3 = generateEncoderValues(dDl*turnAdjustmentFactor);
-//		Er3 = -El3;
-//		sendEncoderValues(Er3, El3);
-//	}else{
-//		// Turn left
-//		cout << "turn left in the end\n";
-//		double dDr = abs(wheelBaseMM*dA);
-//		Er3 = generateEncoderValues(dDr*turnAdjustmentFactor);
-//		El3 = -Er3;
-//		sendEncoderValues(Er3, El3);
-//	}
 	return 0;
 }
 
 int controllerInit(VectorXd startXYA){
-	pos_log.open("logs/pos_controller/pos_log.txt", ofstream::out | ofstream::trunc);
+
+	odometry.open("logs/pos_controller/odometry.txt", ofstream::out | ofstream::trunc);
 	pWhite_Board_RX = (TYPE_White_Board_RX *)buffer;
 	pWhite_Board_TX = (TYPE_White_Board_TX *)malloc(sizeof(TYPE_White_Board_TX));
 	if(!pWhite_Board_TX){
 		cout << "Couldn't allocate" << endl;
 		exit(1);
 	}
-	cXYA << 1, 0, 0,
+	odometryVariance << 1, 0, 0,
 			0, 1, 0,
 			0, 0, pow(M_PI/180,2);
 	posXYA = startXYA;
@@ -310,7 +352,7 @@ VectorXd controllerGetPos(){
 }
 
 VectorXd controllerGetC(){
-	return cXYA;
+	return odometryVariance;
 }
 
 void *travel_thread_start(void *arg){
@@ -318,103 +360,97 @@ void *travel_thread_start(void *arg){
 	VectorXd endXYA(3);
 	endXYA = *(VectorXd*)arg;
 
+	controllerTravel(endXYA, false);
+	travel_done = true;
 
-	controllerTravel(endXYA);
+	return NULL;
+}
+
+void *travel_thread_reversed_start(void *arg){
+
+	VectorXd endXYA(3);
+	endXYA = *(VectorXd*)arg;
+
+	controllerTravel(endXYA, true);
+	travel_done = true;
+
+	return NULL;
+}
 
 
+void *rotate_thread_start(void *arg){
+
+	double A = *(double*)arg;
+
+	controllerRotate(A);
 	travel_done = true;
 
 	return NULL;
 }
 
 int main(){
+
 	VectorXd startXYA(3), endXYA(3), midXYA(3), coxAdjXYA(3);
+	MatrixXd coxVariance(3,3);
 	pthread_t travel;
 	coxAdjXYA << 0, 0, 0;
 	startXYA << 1215, 250, 0;
 	void *data_ptr;
-	travel_done = false;
 
 	lidarInit(NULL);
 	controllerInit(startXYA);
 
 	//####### Phase 1
+	travel_done = false;
 	endXYA << 1215, 2000, 0;
 	data_ptr = &endXYA;
 	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	lidarCoxStart(posXYA+coxAdjXYA, false);
+	lidarCoxStart(posXYA, false);
 	while(!travel_done){
 		if(lidarCoxDone()){
 			coxAdjXYA += lidarGetCoxAdj();
-			lidarCoxStart(posXYA+coxAdjXYA, false);
+			coxVariance = lidarGetVariance();
+			lidarCoxStart(posXYA, false);
 		}
 		usleep(100);
 	}
-	travel_done = false;
-	endXYA = posXYA+coxAdjXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	while(!travel_done)
-		usleep(100);
 	coxAdjXYA << 0, 0, 0;
 
-	//####### Phase 2
+	// ###### Phase 2
 	travel_done = false;
+	endXYA << 1215, 3400, 0;
 	data_ptr = &startXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	lidarCoxStart(posXYA+coxAdjXYA, false);
+	pthread_create(&travel, NULL, travel_thread_reversed_start, data_ptr);
+	lidarCoxStart(posXYA, false);
 	while(!travel_done){
-		while(!lidarCoxDone()){
-			usleep(100);
+		if(lidarCoxDone()){
+			coxAdjXYA += lidarGetCoxAdj();
+			coxVariance = lidarGetVariance();
+			lidarCoxStart(posXYA, false);
 		}
-		coxAdjXYA += lidarGetCoxAdj();
-		lidarCoxStart(posXYA+coxAdjXYA, false);
 		usleep(100);
 	}
-	travel_done = false;
-	startXYA = posXYA+coxAdjXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	while(!travel_done)
-		usleep(100);
-	travel_done = false;
-//	double dx = endXYA(0) - posXYA(0);
-//	double dy = endXYA(1) - posXYA(1);
-//	double da = fmod(atan2(dx,dy)-posXYA(2),2*M_PI);
-//	double a = endXYA(2);
-//
-//
-//	for(int i = 0; i < 10; i++){
-//		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, da;
-//		pthread_create(&travel, NULL, travel_thread_start, (void*)endXYA);
-//		controllerTravel(endXYA+coxAdjXYA);
-//		if(lidarCoxDone()){
-//			coxAdjXYA = lidarGetCoxAdj();
-//			lidarCoxStart(posXYA, false);
-//		}else{
-//			coxAdjXYA << 0, 0, 0;
-//		}
-//	}
-//
-//	endXYA << 1215, 250, 0;
-//	dx = endXYA(0) - posXYA(0);
-//	dy = endXYA(1) - posXYA(1);
-//	da = fmod(atan2(dx,dy)-posXYA(2),2*M_PI);
-//	a = endXYA(2);
+	coxAdjXYA << 0, 0, 0;
+
+	cout << "angle: " << posXYA(2) << "\n";
+
+	// ###### Phase 3
+//	travel_done = false;
+//	endXYA << 500, 2000, 0;
+//	data_ptr = &startXYA;
+//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
 //	lidarCoxStart(posXYA, false);
-//
-//	for(int i = 0; i < 10; i++){
-//		endXYA << posXYA(0)+dx/10, posXYA(1)+dy/10, da;
-//		controllerTravel(endXYA+coxAdjXYA);
+//	while(!travel_done){
 //		if(lidarCoxDone()){
-//			coxAdjXYA = lidarGetCoxAdj();
+//			coxAdjXYA += lidarGetCoxAdj();
+//			coxVariance = lidarGetVariance();
 //			lidarCoxStart(posXYA, false);
-//		}else{
-//			coxAdjXYA << 0, 0, 0;
 //		}
+//		usleep(100);
 //	}
-//
-//	endXYA << posXYA(0), posXYA(1), a;
-//	controllerTravel(endXYA);
-	pos_log.close();
+//	coxAdjXYA << 0, 0, 0;
+
+	odometry.close();
 	lidarStop();
 	return 0;
 }

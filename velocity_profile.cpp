@@ -22,14 +22,14 @@ using Eigen::VectorXd;
 static const int CHANNEL = 1;
 
 
-VectorXd generateEncoderValues(double travelDistanceMM){
+VectorXd generateEncoderValues(double travelDistanceMM, int gear){
 
 	VectorXd positions(1);
 	// Setup
 
 	double maxAcc = 10000.0*2;
 	double maxDeAcc = -10000.0*2;
-	double maxSpeed = 2000.0*8;
+	double maxSpeed = gear*1000.0*8;
 	double startPos = 0.0;
 	double endPos = travelDistanceMM*PULSES_PER_MM;
 	double breakPos = 0.0;

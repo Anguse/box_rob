@@ -20,5 +20,6 @@ int lidarCoxStart(VectorXd currentPosXYA, bool RFF);
 bool lidarCoxDone();
 VectorXd lidarGetCoxAdj();
 MatrixXd lidarGetVariance();
+void lidarSetVariance(MatrixXd newVariance);
 
 #endif /* LIDAR_H_ */

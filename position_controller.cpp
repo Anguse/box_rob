@@ -16,6 +16,7 @@
 #include <iostream>
 #include <pthread.h>
 #include "constants.h"
+#include "kalman.h"
 
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
@@ -33,7 +34,7 @@ MatrixXd odometryVariance(3,3);		// Current uncertainty
 bool travel_done;
 
 // Log
-ofstream odometry;
+ofstream odometry, odometry_variance;
 
 int updatePos(VectorXd Er, VectorXd El){
 
@@ -99,6 +100,7 @@ int updatePos(VectorXd Er, VectorXd El){
 							   cAdjXYA(1,0), cAdjXYA(1,1), cAdjXYA(1,2),
 							   cAdjXYA(2,0), cAdjXYA(2,1), cAdjXYA(2,2);
 		}
+		odometry_variance << cAdjXYA(0,0) << "\t" << cAdjXYA(0,1) << "\t" << cAdjXYA(0,2) << "\t" << cAdjXYA(1,0) << "\t" << cAdjXYA(1,1) << "\t" << cAdjXYA(1,2) << "\t" << cAdjXYA(2,0) << "\t" << cAdjXYA(2,1) << "\t" << cAdjXYA(2,2) << "\n";
 		odometryVariance = cAdjXYA;
 		posXYA = posAdjXYA.row(posAdjXYA.rows()-1);
 	}
@@ -228,21 +230,21 @@ int controllerRotate(double A){
 	if(dA > 0){
 		// Turn right
 		double dDl = abs(WHEELBASE_MM*dA);
-		El = generateEncoderValues(dDl);
+		El = generateEncoderValues(dDl, 1);
 		Er = -El;
 		sendEncoderValues(Er, El, true);
 
-		El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+		El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 1);
 		Er = -El;
 		sendEncoderValues(Er, El, false);
 	}else{
 		// Turn left
 		double dDr = abs(WHEELBASE_MM*dA);
-		Er = generateEncoderValues(dDr);
+		Er = generateEncoderValues(dDr, 1);
 		El = -Er;
 		sendEncoderValues(Er, El, true);
 
-		Er = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR);
+		Er = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR, 1);
 		El = -Er;
 		sendEncoderValues(Er, El, false);
 	}
@@ -256,11 +258,11 @@ int controllerRotateDegrees(double dA){
 
 	// Turn right
 	double dDl = abs(WHEELBASE_MM*dA);
-	El = generateEncoderValues(dDl);
+	El = generateEncoderValues(dDl, 1);
 	Er = -El;
 	sendEncoderValues(Er, El, true);
 
-	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 1);
 	Er = -El;
 	sendEncoderValues(Er, El, false);
 	return 0;
@@ -301,27 +303,27 @@ int controllerTravel(VectorXd endXYA, bool reversed){
 		// Turn right
 		cout << "turn right in the start\n";
 		double dDl = abs(WHEELBASE_MM*dA/2);
-		El1 = generateEncoderValues(dDl);
+		El1 = generateEncoderValues(dDl, 1);
 		Er1 = -El1;
 		sendEncoderValues(Er1, El1, true);
 		// Turn adjustment, not recorded in odometry
-		El1 = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR);
+		El1 = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 1);
 		Er1 = -El1;
 		sendEncoderValues(Er1, El1, false);
 	}else if(dA < 0 && abs(dA)>M_PI/64){
 		// Turn left
 		cout << "turn left in the start\n";
 		double dDr = abs(WHEELBASE_MM*dA/2);
-		Er1 = generateEncoderValues(dDr);
+		Er1 = generateEncoderValues(dDr, 1);
 		El1 = -Er1;
 		sendEncoderValues(Er1, El1, true);
 		// Turn adjustment, not recorded in odometry
-		Er1 = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR);
+		Er1 = generateEncoderValues(dDr*TURN_ADJUSTMENT_FACTOR, 1);
 		El1 = -Er1;
 		sendEncoderValues(Er1, El1, false);
 	}
 	// Travel distance dD
-	El2 = generateEncoderValues(dD);
+	El2 = generateEncoderValues(dD,2);
 	if(reversed)
 		El2 = -El2;
 	Er2 = El2;
@@ -333,6 +335,7 @@ int controllerTravel(VectorXd endXYA, bool reversed){
 int controllerInit(VectorXd startXYA){
 
 	odometry.open("logs/pos_controller/odometry.txt", ofstream::out | ofstream::trunc);
+	odometry_variance.open("logs/pos_controller/odometry_variance.txt", ofstream::out | ofstream::trunc);
 	pWhite_Board_RX = (TYPE_White_Board_RX *)buffer;
 	pWhite_Board_TX = (TYPE_White_Board_TX *)malloc(sizeof(TYPE_White_Board_TX));
 	if(!pWhite_Board_TX){
@@ -391,10 +394,10 @@ void *rotate_thread_start(void *arg){
 int main(){
 
 	VectorXd startXYA(3), endXYA(3), midXYA(3), coxAdjXYA(3);
-	MatrixXd coxVariance(3,3);
+	MatrixXd coxVariance(3,3), kalman(4,3);
 	pthread_t travel;
 	coxAdjXYA << 0, 0, 0;
-	startXYA << 1215, 250, 0;
+	startXYA << 1215, 250, 4*M_PI/180;
 	void *data_ptr;
 
 	lidarInit(NULL);
@@ -408,49 +411,84 @@ int main(){
 	lidarCoxStart(posXYA, false);
 	while(!travel_done){
 		if(lidarCoxDone()){
-			coxAdjXYA += lidarGetCoxAdj();
+			coxAdjXYA = lidarGetCoxAdj();
 			coxVariance = lidarGetVariance();
+			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+//			posXYA += coxAdjXYA;
+			odometryVariance = kalman.block(0, 0, 3, 3);
+			lidarSetVariance(odometryVariance);
+			posXYA = kalman.row(3);
 			lidarCoxStart(posXYA, false);
+			coxAdjXYA << 0, 0, 0;
 		}
 		usleep(100);
 	}
-	coxAdjXYA << 0, 0, 0;
 
 	// ###### Phase 2
 	travel_done = false;
-	endXYA << 1215, 3400, 0;
-	data_ptr = &startXYA;
-	pthread_create(&travel, NULL, travel_thread_reversed_start, data_ptr);
+	endXYA << 500, 2000, 0;
+	data_ptr = &endXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
 	lidarCoxStart(posXYA, false);
 	while(!travel_done){
 		if(lidarCoxDone()){
-			coxAdjXYA += lidarGetCoxAdj();
+			coxAdjXYA = lidarGetCoxAdj();
 			coxVariance = lidarGetVariance();
+			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+//			posXYA += coxAdjXYA;
+			odometryVariance = kalman.block(0, 0, 3, 3);
+			lidarSetVariance(odometryVariance);
+			posXYA = kalman.row(3);
 			lidarCoxStart(posXYA, false);
+			coxAdjXYA << 0, 0, 0;
 		}
 		usleep(100);
 	}
-	coxAdjXYA << 0, 0, 0;
-
-	cout << "angle: " << posXYA(2) << "\n";
 
 	// ###### Phase 3
-//	travel_done = false;
-//	endXYA << 500, 2000, 0;
-//	data_ptr = &startXYA;
-//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-//	lidarCoxStart(posXYA, false);
-//	while(!travel_done){
-//		if(lidarCoxDone()){
-//			coxAdjXYA += lidarGetCoxAdj();
-//			coxVariance = lidarGetVariance();
-//			lidarCoxStart(posXYA, false);
-//		}
-//		usleep(100);
-//	}
-//	coxAdjXYA << 0, 0, 0;
+	travel_done = false;
+	endXYA << 500, 2000, 0;
+	data_ptr = &startXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	lidarCoxStart(posXYA, false);
+	while(!travel_done){
+		if(lidarCoxDone()){
+			coxAdjXYA = lidarGetCoxAdj();
+			coxVariance = lidarGetVariance();
+			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+//			posXYA += coxAdjXYA;
+			odometryVariance = kalman.block(0, 0, 3, 3);
+			lidarSetVariance(odometryVariance);
+			posXYA = kalman.row(3);
+			lidarCoxStart(posXYA, false);
+			coxAdjXYA << 0, 0, 0;
+		}
+		usleep(100);
+	}
+
+	// ###### Phase 4, final adjustment
+	travel_done = false;
+	endXYA << 500, 2000, 0;
+	data_ptr = &startXYA;
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	lidarCoxStart(posXYA, false);
+	while(!travel_done){
+		if(lidarCoxDone()){
+			coxAdjXYA = lidarGetCoxAdj();
+			coxVariance = lidarGetVariance();
+			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+//			posXYA += coxAdjXYA;
+			odometryVariance = kalman.block(0, 0, 3, 3);
+			lidarSetVariance(odometryVariance);
+			posXYA = kalman.row(3);
+			lidarCoxStart(posXYA, false);
+			coxAdjXYA << 0, 0, 0;
+		}
+		usleep(100);
+	}
 
 	odometry.close();
+	odometry_variance.close();
 	lidarStop();
 	return 0;
 }

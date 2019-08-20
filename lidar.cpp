@@ -48,7 +48,7 @@ bool cox_done;
 
 // Logging
 ifstream inputFile;
-ofstream adjustments, measurements, positions, prerot_measurements, scan_inliers, raw;
+ofstream adjustments, measurements, positions, prerot_measurements, scan_inliers, raw, lidar_variance;
 
 int start_lidar(){
 	struct sockaddr_in serv_addr;
@@ -202,7 +202,7 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			quality = (int)data[0]>>2;
 			angle = (((int)data[1]>>1) + ((int)data[2]<<8))>>7;
 			distance = (((int)data[3]) + ((int)data[4]<<8))>>2;
-			one_scan << quality, fmod(angle*SCAN_ANGLE_ADJUSTMENT,M_PI*2), distance;
+			one_scan << quality, M_PI+fmod(angle*SCAN_ANGLE_ADJUSTMENT,M_PI*2), distance;
 			if(quality != 1){
 				all_scans.row(number_of_scans) = one_scan;
 				raw << one_scan(0) << "\t" << one_scan(1) << "\t" << one_scan(2) << "\n";
@@ -378,8 +378,14 @@ void *cox_linefit(void *ptr){
 		}
 		if(inliers < MIN_INLIERS){
 			iterations++;
-			inlier_threshold_offset += 5;
+			inlier_threshold_offset+=2;
 			cout << "not enough inliers, increasing threshold\n";
+			continue;
+		}
+		if(inliers > MAX_INLIERS){
+			iterations++;
+			inlier_threshold_offset-=2;
+			cout << "too many inliers, decreasing threshold\n";
 			continue;
 		}
 		MatrixXd A(inliers, 3);
@@ -389,7 +395,7 @@ void *cox_linefit(void *ptr){
 		B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
 		n = A.size();
 		S2 = ((targets-(A*B)).transpose()*(targets-(A*B)))/((double)(n-4.0)); // Calculate the variance
-		C = S2(0)*((A.transpose()*A).inverse());
+		C = S2(0)*((A.transpose()*A).completeOrthogonalDecomposition().pseudoInverse());
 
 		// Add latest contribution to the overall congruence
 		dx = B(0);
@@ -424,7 +430,7 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
-			coxVariance = C;
+			coxVariance += C;
 			cox_done = true;
 			cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
 			break;
@@ -459,6 +465,7 @@ int lidarInit(const char* filepath){
 	positions.open("logs/lidar_positions.txt", ofstream::out | ofstream::trunc);
 	scan_inliers.open("logs/lidar_inliers.txt", ofstream::out | ofstream::trunc);
 	raw.open("logs/lidar_raw.txt", ofstream::out | ofstream::trunc);
+	lidar_variance.open("logs/lidar_variance.txt", ofstream::out | ofstream::trunc);
 
 	if(!filepath){
 		start_lidar();
@@ -477,6 +484,7 @@ int lidarStop(){
 	measurements.close();
 	prerot_measurements.close();
 	positions.close();
+	lidar_variance.close();
 	stop_lidar();
 	close(sockfd);
 	return 0;
@@ -529,5 +537,10 @@ VectorXd lidarGetCoxAdj(){
 }
 
 MatrixXd lidarGetVariance(){
+	lidar_variance << coxVariance(0,0) << "\t" << coxVariance(0,1) << "\t" << coxVariance(0,2) << "\t" << coxVariance(1,0) << "\t" << coxVariance(1,1) << "\t" << coxVariance(1,2) << "\t" << coxVariance(2,0) << "\t" << coxVariance(2,1) << "\t" << coxVariance(2,2) << "\n";
 	return coxVariance;
+}
+
+void lidarSetVariance(MatrixXd newVariance){
+	coxVariance = newVariance;
 }

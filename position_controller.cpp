@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include "constants.h"
 #include "kalman.h"
+#include "camera.h"
 
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
@@ -32,6 +33,8 @@ unsigned char buffer[100];
 VectorXd posXYA(3);					// Current position
 MatrixXd odometryVariance(3,3);		// Current uncertainty
 bool travel_done;
+bool rotation_done;
+bool box_delivered;
 
 // Log
 ofstream odometry, odometry_variance;
@@ -55,7 +58,7 @@ int updatePos(VectorXd Er, VectorXd El){
 	double dDr, dDl, dD, dA, dX, dY;
 
 	posAdjXYA.row(0) << posXYA(0), posXYA(1), posXYA(2);		// Adjusting 90 degrees for calculation?
-	cStorage.row(0) << odometryVariance(0), 0, 0, 0, odometryVariance(1), 0, 0, 0, odometryVariance(2);
+	cStorage.row(0) << odometryVariance(0,0), 0, 0, 0, odometryVariance(1,1), 0, 0, 0, odometryVariance(2,2);
 	Dr = Er/PULSES_PER_MM;
 	Dl = El/PULSES_PER_MM;
 
@@ -229,7 +232,7 @@ int controllerRotate(double A){
 	double dA = A - posXYA(2);
 	if(dA > 0){
 		// Turn right
-		double dDl = abs(WHEELBASE_MM*dA);
+		double dDl = abs(WHEELBASE_MM*dA/2);
 		El = generateEncoderValues(dDl, 1);
 		Er = -El;
 		sendEncoderValues(Er, El, true);
@@ -239,7 +242,7 @@ int controllerRotate(double A){
 		sendEncoderValues(Er, El, false);
 	}else{
 		// Turn left
-		double dDr = abs(WHEELBASE_MM*dA);
+		double dDr = abs(WHEELBASE_MM*dA/2);
 		Er = generateEncoderValues(dDr, 1);
 		El = -Er;
 		sendEncoderValues(Er, El, true);
@@ -257,14 +260,38 @@ int controllerRotateDegrees(double dA){
 	VectorXd Er;
 
 	// Turn right
-	double dDl = abs(WHEELBASE_MM*dA);
-	El = generateEncoderValues(dDl, 1);
+	double dDl = abs(WHEELBASE_MM*dA/2);
+	El = generateEncoderValues(dDl, 0.5);
 	Er = -El;
 	sendEncoderValues(Er, El, true);
 
-	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 1);
+	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 0.5);
 	Er = -El;
 	sendEncoderValues(Er, El, false);
+	return 0;
+}
+
+int controllerForward(double dD){
+
+	VectorXd El, Er;
+
+	// Travel distance dD
+	El = generateEncoderValues(dD,2);
+	Er = El;
+	sendEncoderValues(Er, El, true);
+
+	return 0;
+}
+
+int controllerBackward(double dD){
+
+	VectorXd El, Er;
+
+	// Travel distance dD
+	El = -generateEncoderValues(dD,2);
+	Er = El;
+	sendEncoderValues(Er, El, true);
+
 	return 0;
 }
 
@@ -380,112 +407,178 @@ void *travel_thread_reversed_start(void *arg){
 	return NULL;
 }
 
+void *travel_forward(void *arg){
+
+	double dD = *(double*)arg;
+	controllerForward(dD);
+	travel_done = true;
+
+}
+
+void *box_thread_start(void *arg){
+
+	VectorXd endXYA(3);
+	endXYA << 1215, 250, 0;
+
+	controllerForward(450.0);
+	controllerTravel(endXYA, false);
+	controllerBackward(450.0);
+
+	travel_done = true;
+	box_delivered = true;
+
+}
 
 void *rotate_thread_start(void *arg){
 
-	double A = *(double*)arg;
+	double dA = *(double*)arg;
 
-	controllerRotate(A);
+	cout << "dA: " << dA << "\n";
+
+	controllerRotateDegrees(dA);
 	travel_done = true;
+	rotation_done = true;
 
 	return NULL;
 }
 
 int main(){
 
+	/*	~ Start camera.
+		~ Go to the center and rotate to try and find a box
+		~ If no box is found, go a little further towards the other end of the arena and rotate
+		~ When the robot for certain sees a good box, pthread_cancel() current traveling and go for the box.(Cox adjustments obtained during travel?)
+		Delivering up phase:
+			Delivering = true (Disable possibility of interrupt if another box is spotted)
+			Head straight towards the box until it is perceived in desired size (distance)
+			Verify that it is a good box
+			Go forward requiered distance
+			Set home as travel target.
+			Back off for requiered distance
+			Delivering = false
+	*/
+
 	VectorXd startXYA(3), endXYA(3), midXYA(3), coxAdjXYA(3);
 	MatrixXd coxVariance(3,3), kalman(4,3);
-	pthread_t travel;
+	pthread_t travel, camera;
 	coxAdjXYA << 0, 0, 0;
-	startXYA << 1215, 250, 4*M_PI/180;
+	odometryVariance << 1, 0, 0,
+						0, 1, 0,
+						0, 0, 5*M_PI/180;
+
+	startXYA << 1215, 250, 0*M_PI/180;
 	void *data_ptr;
 
 	lidarInit(NULL);
 	controllerInit(startXYA);
 
+	pthread_create(&camera, NULL, camera_thread_start, (void*)NULL);
+
+	box_delivered = false;
+
 	//####### Phase 1
 	travel_done = false;
+	rotation_done = false;
 	endXYA << 1215, 2000, 0;
 	data_ptr = &endXYA;
 	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
 	lidarCoxStart(posXYA, false);
-	while(!travel_done){
+	while(!box_delivered){
 		if(lidarCoxDone()){
 			coxAdjXYA = lidarGetCoxAdj();
 			coxVariance = lidarGetVariance();
 			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
-//			posXYA += coxAdjXYA;
 			odometryVariance = kalman.block(0, 0, 3, 3);
 			lidarSetVariance(odometryVariance);
 			posXYA = kalman.row(3);
 			lidarCoxStart(posXYA, false);
 			coxAdjXYA << 0, 0, 0;
 		}
+		if(cameraGetBoxStatus()){
+			cameraSetBoxStatus(false);
+			pthread_cancel(travel);
+			pthread_cancel(camera);
+			travel_done = false;
+			pthread_create(&travel, NULL, box_thread_start, (void*)NULL);
+		}
+		if(travel_done){
+			travel_done = false;
+//			double dA = (M_PI*2);
+//			data_ptr = &dA;
+			data_ptr = &startXYA;
+			pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+		}
+//		if(rotation_done){
+//			rotation_done = false;
+//			break;
+//		}
 		usleep(100);
 	}
+	// Travel back to the middle
+//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
 
 	// ###### Phase 2
-	travel_done = false;
-	endXYA << 500, 2000, 0;
-	data_ptr = &endXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	lidarCoxStart(posXYA, false);
-	while(!travel_done){
-		if(lidarCoxDone()){
-			coxAdjXYA = lidarGetCoxAdj();
-			coxVariance = lidarGetVariance();
-			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
-//			posXYA += coxAdjXYA;
-			odometryVariance = kalman.block(0, 0, 3, 3);
-			lidarSetVariance(odometryVariance);
-			posXYA = kalman.row(3);
-			lidarCoxStart(posXYA, false);
-			coxAdjXYA << 0, 0, 0;
-		}
-		usleep(100);
-	}
+//	travel_done = false;
+//	endXYA << 500, 2000, 0;
+//	data_ptr = &endXYA;
+//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+//	lidarCoxStart(posXYA, false);
+//	while(!travel_done){
+//		if(lidarCoxDone()){
+//			coxAdjXYA = lidarGetCoxAdj();
+//			coxVariance = lidarGetVariance();
+//			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+////			posXYA += coxAdjXYA;
+//			odometryVariance = kalman.block(0, 0, 3, 3);
+//			lidarSetVariance(odometryVariance);
+//			posXYA = kalman.row(3);
+//			lidarCoxStart(posXYA, false);
+//			coxAdjXYA << 0, 0, 0;
+//		}
+//		usleep(100);
+//	}
 
 	// ###### Phase 3
-	travel_done = false;
-	endXYA << 500, 2000, 0;
-	data_ptr = &startXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	lidarCoxStart(posXYA, false);
-	while(!travel_done){
-		if(lidarCoxDone()){
-			coxAdjXYA = lidarGetCoxAdj();
-			coxVariance = lidarGetVariance();
-			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
-//			posXYA += coxAdjXYA;
-			odometryVariance = kalman.block(0, 0, 3, 3);
-			lidarSetVariance(odometryVariance);
-			posXYA = kalman.row(3);
-			lidarCoxStart(posXYA, false);
-			coxAdjXYA << 0, 0, 0;
-		}
-		usleep(100);
-	}
+//	travel_done = false;
+//	endXYA << 500, 2000, 0;
+//	data_ptr = &startXYA;
+//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+//	lidarCoxStart(posXYA, false);
+//	while(!travel_done){
+//		if(lidarCoxDone()){
+//			coxAdjXYA = lidarGetCoxAdj();
+//			coxVariance = lidarGetVariance();
+//			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+////			posXYA += coxAdjXYA;
+//			odometryVariance = kalman.block(0, 0, 3, 3);
+//			lidarSetVariance(odometryVariance);
+//			posXYA = kalman.row(3);
+//			lidarCoxStart(posXYA, false);
+//			coxAdjXYA << 0, 0, 0;
+//		}
+//		usleep(100);
+//	}
 
 	// ###### Phase 4, final adjustment
-	travel_done = false;
-	endXYA << 500, 2000, 0;
-	data_ptr = &startXYA;
-	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
-	lidarCoxStart(posXYA, false);
-	while(!travel_done){
-		if(lidarCoxDone()){
-			coxAdjXYA = lidarGetCoxAdj();
-			coxVariance = lidarGetVariance();
-			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
-//			posXYA += coxAdjXYA;
-			odometryVariance = kalman.block(0, 0, 3, 3);
-			lidarSetVariance(odometryVariance);
-			posXYA = kalman.row(3);
-			lidarCoxStart(posXYA, false);
-			coxAdjXYA << 0, 0, 0;
-		}
-		usleep(100);
-	}
+//	travel_done = false;
+//	endXYA << 500, 2000, 0;
+//	data_ptr = &startXYA;
+//	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+//	lidarCoxStart(posXYA, false);
+//	while(!travel_done){
+//		if(lidarCoxDone()){
+//			coxAdjXYA = lidarGetCoxAdj();
+//			coxVariance = lidarGetVariance();
+//			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+////			posXYA += coxAdjXYA;
+//			odometryVariance = kalman.block(0, 0, 3, 3);
+//			lidarSetVariance(odometryVariance);
+//			posXYA = kalman.row(3);
+//			lidarCoxStart(posXYA, false);
+//			coxAdjXYA << 0, 0, 0;
+//		}
+//		usleep(100);
+//	}
 
 	odometry.close();
 	odometry_variance.close();

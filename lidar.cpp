@@ -392,7 +392,8 @@ void *cox_linefit(void *ptr){
 		A.col(0) = X1;
 		A.col(1) = X2;
 		A.col(2) = X3;
-		B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
+		B = A.householderQr().solve(targets);
+//		B = (A.transpose() * A).ldlt().solve(A.transpose() * targets);
 		n = A.size();
 		S2 = ((targets-(A*B)).transpose()*(targets-(A*B)))/((double)(n-4.0)); // Calculate the variance
 		C = S2(0)*((A.transpose()*A).completeOrthogonalDecomposition().pseudoInverse());
@@ -421,6 +422,9 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(2) = dda;
 			cox_done = true;
 			finished = true;
+			coxVariance << 999, 999, 999,
+						   999,	999, 999,
+						   999, 999, 999;
 			std::cout << "Too big adjustment\n";
 			break;
 		}
@@ -447,6 +451,10 @@ void *cox_linefit(void *ptr){
 int lidarInit(const char* filepath){
 
 	pthread_mutex_init(&coxlock, NULL);
+
+	coxVariance << 10, 0, 0,
+				   0, 10, 0,
+				   0, 0, 5*M_PI/180;
 
 	// Construct map
 	VectorXd line(4);

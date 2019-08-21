@@ -12,7 +12,7 @@
 
 using Eigen::VectorXd;
 
-VectorXd generateEncoderValues(double travelDistanceMM, int gear);
+VectorXd generateEncoderValues(double travelDistanceMM, double gear);
 
 
 #endif /* VELOCITY_PROFILE_H_ */

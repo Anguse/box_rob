@@ -22,7 +22,7 @@ using Eigen::VectorXd;
 static const int CHANNEL = 1;
 
 
-VectorXd generateEncoderValues(double travelDistanceMM, int gear){
+VectorXd generateEncoderValues(double travelDistanceMM, double gear){
 
 	VectorXd positions(1);
 	// Setup

@@ -48,7 +48,7 @@ bool cox_done;
 
 // Logging
 ifstream inputFile;
-ofstream adjustments, measurements, positions, prerot_measurements, scan_inliers, raw, lidar_variance;
+ofstream adjustments, measurements, positions, prerot_measurements, scan_inliers, raw, lidar_variance, failed_cox;
 
 int start_lidar(){
 	struct sockaddr_in serv_addr;
@@ -202,7 +202,7 @@ MatrixXd get_scan(int sockfd, int scan_duration_ms, int min_scans){
 			quality = (int)data[0]>>2;
 			angle = (((int)data[1]>>1) + ((int)data[2]<<8))>>7;
 			distance = (((int)data[3]) + ((int)data[4]<<8))>>2;
-			one_scan << quality, M_PI+fmod(angle*SCAN_ANGLE_ADJUSTMENT,M_PI*2), distance;
+			one_scan << quality, M_PI+fmod(angle*SCAN_ANGLE_ADJUSTMENT+M_PI,M_PI*2), distance;
 			if(quality != 1){
 				all_scans.row(number_of_scans) = one_scan;
 				raw << one_scan(0) << "\t" << one_scan(1) << "\t" << one_scan(2) << "\n";
@@ -422,10 +422,13 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(2) = dda;
 			cox_done = true;
 			finished = true;
-			coxVariance << 999, 999, 999,
-						   999,	999, 999,
-						   999, 999, 999;
-			std::cout << "Too big adjustment\n";
+			for(int i = 0; i < inliers; i++){
+				failed_cox << vi(i,0) << "\t" << vi(i,1) << "\n";
+			}
+			coxVariance << 1, 0, 0,
+						   0, 1, 0,
+						   0, 0, 1*M_PI/180;
+			std::cout << "Too big adjustment, " << inliers << " inliers\n";
 			break;
 		}
 		// Check if process has converged
@@ -434,7 +437,7 @@ void *cox_linefit(void *ptr){
 			cox_adjustment(0) = ddx;
 			cox_adjustment(1) = ddy;
 			cox_adjustment(2) = dda;
-			coxVariance += C;
+			coxVariance = C;
 			cox_done = true;
 			cout << "Finished in " << iterations << "iterations with " << inliers << "inliers\n";
 			break;
@@ -474,6 +477,7 @@ int lidarInit(const char* filepath){
 	scan_inliers.open("logs/lidar_inliers.txt", ofstream::out | ofstream::trunc);
 	raw.open("logs/lidar_raw.txt", ofstream::out | ofstream::trunc);
 	lidar_variance.open("logs/lidar_variance.txt", ofstream::out | ofstream::trunc);
+	failed_cox.open("logs/lidar_failed.txt", ofstream::out | ofstream::trunc);
 
 	if(!filepath){
 		start_lidar();
@@ -493,6 +497,7 @@ int lidarStop(){
 	prerot_measurements.close();
 	positions.close();
 	lidar_variance.close();
+	failed_cox.close();
 	stop_lidar();
 	close(sockfd);
 	return 0;

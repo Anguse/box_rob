@@ -11,31 +11,37 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/video/tracking.hpp>
 #include "opencv2/imgproc/imgproc.hpp"
+#include <pthread.h>
 
 #include "camera.h"
 
 using namespace std;
 using namespace cv;
 
-bool box_found;
+int box_status = -1;
+
+pthread_mutex_t lock;
+
 
 //initial min and max HSV filter values. Commented worked best on robot.
 int H_MIN = 99;				// 99
 int H_MAX = 256;			// 256
-int S_MIN = 100;			//100
+int S_MIN = 150;			//100
 int S_MAX = 256;			//256
 int V_MIN = 32;				//32
-int V_MAX = 216;			//219
-double DIST2BOX = 9000;
+int V_MAX = 219;			//219
+int boxNumArea;
+int boxNumHier;
+double DIST2BOX = 5000;
 //default capture width and height
 const int FRAME_WIDTH = 640;
 const int FRAME_HEIGHT = 480;
 
 //The distance from center which will decide how large the frame where differentiating between ones and zeroes will be.
-int from_cen = 100;
+int from_cen = 80;
 
 //max number of objects to be detected in frame
-const int MAX_NUM_OBJECTS = 25;  //Originally 50
+const int MAX_NUM_OBJECTS = 50;  //Originally 50
 //minimum and maximum object area
 const int MIN_OBJECT_AREA = 20 * 20;
 const int MAX_OBJECT_AREA = FRAME_HEIGHT * FRAME_WIDTH / 1.5;
@@ -56,7 +62,6 @@ int numFromBox = -1;
 RNG rng(12345);
 
 string intToString(int number) {
-
 
 	std::stringstream ss;
 	ss << number;
@@ -116,18 +121,15 @@ int evalBoxArea(Mat canny_output, vector <vector<cv::Point> > contours) {
 
 //Decide whether or not the cropped image contains a box with zero or one based on hierarchy
 int evalBoxHier(vector<Vec4i> hierarchy) {
-	if (hierarchy.size() > 2) {
+	if (hierarchy.size() > 2)
 		return 0;
-	}
-	else {
+	else
 		return 1;
-	}
-
 }
 
 //Will return an int, which will be the same number as the box. If there's no indication of what number the box has the function return -1. 
 // If the box is considered to be a zero it returns 0. If the box is considered to be a one it returns 1.
-int trackFilteredObject(int &x, int &y, Mat threshold, Mat &cameraFeed) {
+int trackFilteredObject(int &middlePointX, int &middlePointY, Mat threshold, Mat &cameraFeed) {
 
 	Mat temp;
 	threshold.copyTo(temp);
@@ -136,99 +138,71 @@ int trackFilteredObject(int &x, int &y, Mat threshold, Mat &cameraFeed) {
 	vector< vector<Point> > contours;
 	vector<Vec4i> hierarchy;
 	//find contours of filtered image using openCV findContours function
-	findContours(temp, contours, hierarchy, RETR_LIST, CHAIN_APPROX_SIMPLE);
+	Mat canny_output;
+	Canny(temp, canny_output, thresh, thresh * 2, 3);
 
-	//This is to draw the contour if the frame. Will not be used on robot.
-//	Mat drawing = Mat::zeros(temp.size(), CV_8UC3);
-//	for (int i = 0; i < contours.size(); i++)
-//	{
-//		Scalar color = Scalar(0, 255, 0);
-//		drawContours(drawing, contours, i, color, 2, 8, hierarchy, 0, Point());
-//		Scalar color2 = Scalar(255, 0, 0);
-//
-//	}
-//
-//
-//	/// Show in a window
-//	namedWindow("Contours", WINDOW_AUTOSIZE);
-//	imshow("Contours", drawing);
+	findContours(canny_output, contours, hierarchy, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
-	
+	/*//This is to draw the contour if the frame. Will not be used on robot.
+	Mat drawing = Mat::zeros(canny_output.size(), CV_8UC3);
+	for (int i = 0; i < contours.size(); i++)
+	{
+		Scalar color = Scalar(0, 255, 0);
+		drawContours(drawing, contours, i, color, 2, 8, hierarchy, 0, Point());
+		Scalar color2 = Scalar(255, 0, 0);
+
+	}
+
+
+	/// Show in a window
+	namedWindow("Contours", WINDOW_AUTOSIZE);
+	imshow("Contours", drawing);
+	*/
+
 	//use moments method to find our filtered object
-	int biggestContArea = getMaxAreaContourId(contours);
 	double refArea = 0;
 	bool objectFound = false;
-	//If the contour in question has atleast some kind of hierarchy and that the contour is close enough(based on the area of the contour).
-	if (hierarchy.size() > 0 && (contourArea(contours.at(biggestContArea)) > DIST2BOX)) {
-		int numObjects = hierarchy.size();
-		//if number of objects greater than MAX_NUM_OBJECTS we have a noisy filter
-		if (numObjects < MAX_NUM_OBJECTS) {
-			for (int index = 0; index >= 0; index = hierarchy[index][0]) {
 
-				Moments moment = moments((cv::Mat)contours[index]);
-				double area = moment.m00;
-
-				//if the area is less than 20 px by 20px then it is probably just noise
-				//if the area is the same as the 3/2 of the image size, probably just a bad filter
-				//we only want the object with the largest area so we safe a reference area each
-				//iteration and compare it to the area in the next iteration.
-				if (area > MIN_OBJECT_AREA && area<MAX_OBJECT_AREA && area>refArea) {
-					x = moment.m10 / area;
-					y = moment.m01 / area;
-					objectFound = true;
-					refArea = area;
-				}
-				else objectFound = false;
-			}
-			//let user know you found an object
-			if (objectFound == true) {
-
-				if (x < FRAME_WIDTH / 2 + from_cen && x > FRAME_WIDTH / 2 - from_cen) {
-					//cout << "Object is centered" << "\n";
-					capFlag = true;
-
-					Mat frame2, frame2_gray;
-										
-					frame2 = temp.clone();
-					Rect myROI = Rect(FRAME_WIDTH / 2 - from_cen, 0, 100, FRAME_HEIGHT);
-					Mat image_roi = frame2(myROI).clone();
-					blur(image_roi, image_roi, Size(3, 3));
-					//Create a canny with set threshold
-					Mat canny_output;
-					Canny(image_roi, canny_output, thresh, thresh * 2, 3);
-
-					//Find contours in cropped part of frame
-					vector< vector<Point> > contours2;
-					vector<Vec4i> hierarchy2;
-					findContours(canny_output, contours2, hierarchy2, RETR_LIST, CHAIN_APPROX_SIMPLE);
-					
-					int boxNumArea, boxNumHier;
-					boxNumArea = evalBoxArea(canny_output, contours);
-					boxNumHier = evalBoxHier(hierarchy2);
-					
-					//If both area and hierarchy classifies the box as a one then return 1.
-					if (boxNumArea == 1 && boxNumHier == 1) {
-						return 1;
-					}
-					else
-					{
-						return 0;
-					}
-						
-				}
-				else if (x > FRAME_WIDTH / 2 + from_cen) {
-					//Close enough but on the positive side.
-					return 2;
-				}
-				else {
-					//Close enough but on the negative side.
-					return 3;
-					
-				}
-			}
-
+	if (hierarchy.size() > 0) {
+		//Go for biggest area contour ie closest box.
+		int biggestContAreaID = getMaxAreaContourId(contours);
+		if(biggestContAreaID == -1){
+			cout << "vector subscript out of range" << endl;
+			return -1;
 		}
-		else cout << "TOO MUCH NOISE! ADJUST FILTER";
+		Moments middleMoment = moments((cv::Mat)contours[biggestContAreaID]);
+		double area = middleMoment.m00;
+
+		//if the area is less than 20 px by 20px then it is probably just noise
+		//if the area is the same as the 3/2 of the image size, probably just a bad filter
+		//we only want the object with the largest area so we safe a reference area each
+		//iteration and compare it to the area in the next iteration.
+		if (area > MIN_OBJECT_AREA && area<MAX_OBJECT_AREA) {
+			middlePointX = middleMoment.m10 / area;
+			middlePointY = middleMoment.m01 / area;
+		}
+		int middlePointXCamera = int(FRAME_WIDTH / 2);
+		int middlePointYCamera = int(FRAME_HEIGHT / 2);
+
+		int distFromCen = middlePointXCamera - middlePointX;
+		int distCamera2Obj = FRAME_HEIGHT - middlePointY;
+
+		if (middlePointX < FRAME_WIDTH / 2 + from_cen && middlePointX > FRAME_WIDTH / 2 - from_cen ) {
+			if (contourArea(contours.at(biggestContAreaID)) > DIST2BOX) {
+				boxNumArea = evalBoxArea(canny_output, contours);
+				boxNumHier = evalBoxHier(hierarchy);
+				return 1;
+			}else
+				return 4; //Centered object found but not close enough to classify
+		}
+		else if (middlePointX > middlePointXCamera + from_cen) {
+			//cout << "The object is on the right side" << endl;
+			return 2;
+		}
+		else {
+			//cout << "The object is on the left side" << endl;
+			return 3;
+		}
 	}
 	return -1;
 }
@@ -240,8 +214,8 @@ int cameraFindBox()
 	bool trackObjects = true;
 	bool useMorphOps = true;
 	//Matrix to store each frame of the webcam feed
-	Mat cameraFeed;
 	Mat increasedFeed;
+	Mat cameraFeed;
 	//matrix storage for HSV image
 	Mat HSV;
 	//matrix storage fo200r binary threshold image
@@ -265,7 +239,6 @@ int cameraFindBox()
 
 		//store image to matrix
 		capture.read(increasedFeed);
-
 		//convert frame from BGR to HSV colorspace
 		cvtColor(increasedFeed, HSV, COLOR_BGR2HSV);
 		//filter HSV image between values and store filtered image to
@@ -302,6 +275,10 @@ int cameraFindBox()
 			*/
 			numFromBox = trackFilteredObject(x, y, threshold, increasedFeed);
 			
+			pthread_mutex_lock(&lock);
+			box_status = numFromBox;
+			pthread_mutex_unlock(&lock);
+
 			if (numFromBox == 0)
 				cout << "It's a zero" << endl;
 			if (numFromBox == 1)
@@ -310,14 +287,13 @@ int cameraFindBox()
 				cout << "Not sure what it is, turn RIGHT until numFromBox is either 1 or 0!" << endl;
 			if (numFromBox == 3)
 				cout << "Not sure what it is, turn LEFT until numFromBox is either 1 or 0!" << endl;
-		}
-		if(numFromBox == 1){
-			// Distance = 450mm
-			return 1;
+			if (numFromBox == 4){
+				cout << "Found centered box but far away. Go forward.\n" << endl;
+			}
 		}
 		//delay 30ms so that screen can refresh.
 		//image will not appear without this waitKey() command
-		//waitKey(30);
+		waitKey(30);
 	}
 	
 	return 0;
@@ -325,22 +301,28 @@ int cameraFindBox()
 
 void *camera_thread_start(void *arg){
 
+	pthread_mutex_init(&lock, NULL);
+
+	pthread_setcancelstate(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
 	int success = cameraFindBox();
-	if(success == 1)
-		box_found = true;
-	else
-		box_found = false;
 
 }
 
-bool cameraGetBoxStatus(){
+int cameraGetBoxStatus(){
 
-	return box_found;
+	pthread_mutex_lock(&lock);
+	int old_status = box_status;
+	box_status = -1;
+	pthread_mutex_unlock(&lock);
+
+	return old_status;
 }
 
-void cameraSetBoxStatus(bool newStatus){
+void cameraSetBoxStatus(int newStatus){
 
-	box_found = newStatus;
-
+	pthread_mutex_lock(&lock);
+	box_status = newStatus;
+	pthread_mutex_unlock(&lock);
 }
 

@@ -18,6 +18,7 @@
 #include "constants.h"
 #include "kalman.h"
 #include "camera.h"
+#include <signal.h>
 
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
@@ -30,11 +31,17 @@ TYPE_White_Board_TX *pWhite_Board_TX;
 unsigned char buffer[100];
 
 // Odometry
+VectorXd homeXYA(3);
 VectorXd posXYA(3);					// Current position
 MatrixXd odometryVariance(3,3);		// Current uncertainty
+
+// Thread managment
+bool interruptable;
 bool travel_done;
 bool rotation_done;
 bool box_delivered;
+bool interrupt_travel;
+bool has_box;
 
 // Log
 ofstream odometry, odometry_variance;
@@ -146,6 +153,11 @@ int sendEncoderValues(VectorXd Er, VectorXd El, bool update_pos){
 	   if(update_pos && i < El.size()-1){
 		   updatePos(El.segment(i, 2), Er.segment(i, 2)); //Swapped El & Er
 	   }
+	   if(interrupt_travel){
+		   // Interrupt signal
+		   cout << "\ninterrupt_travel called\n";
+		   return 0;
+	   }
 	   usleep(10000); // sleep in micro sek
    }
 //   cout << "Done!, endpos = (" << pWhite_Board_RX->Position_M0 << ",\t" << pWhite_Board_RX->Position_M1 << ")"<< endl;
@@ -254,20 +266,34 @@ int controllerRotate(double A){
 	return 0;
 }
 
-int controllerRotateDegrees(double dA){
+int controllerRotateDegrees(double dA, string direction){
 
 	VectorXd El;
 	VectorXd Er;
-
-	// Turn right
 	double dDl = abs(WHEELBASE_MM*dA/2);
-	El = generateEncoderValues(dDl, 0.5);
-	Er = -El;
-	sendEncoderValues(Er, El, true);
+	double dDl_adj = abs(WHEELBASE_MM*(4*M_PI/180)/2);
 
-	El = generateEncoderValues(dDl*TURN_ADJUSTMENT_FACTOR, 0.5);
-	Er = -El;
-	sendEncoderValues(Er, El, false);
+	if(direction.compare("right") == 0){
+		// Turn right
+		El = generateEncoderValues(dDl, 1);
+		Er = -El;
+		sendEncoderValues(Er, El, true);
+
+		// Adjustment
+		El = generateEncoderValues(dDl_adj, 1);
+		Er = -El;
+		sendEncoderValues(Er, El, false);
+	}else if(direction.compare("left") == 0){
+		Er = generateEncoderValues(dDl, 1);
+		El = -Er;
+		sendEncoderValues(Er, El, true);
+
+		Er = generateEncoderValues(dDl_adj, 1);
+		El = -Er;
+		sendEncoderValues(Er, El, false);
+	}else{
+		return 1;
+	}
 	return 0;
 }
 
@@ -279,6 +305,9 @@ int controllerForward(double dD){
 	El = generateEncoderValues(dD,2);
 	Er = El;
 	sendEncoderValues(Er, El, true);
+//	El = generateEncoderValues(20, 2);
+//	Er = El;
+//	sendEncoderValues(Er, El, false);
 
 	return 0;
 }
@@ -311,12 +340,9 @@ int controllerTravel(VectorXd endXYA, bool reversed){
 		dY = 0.000000000000000000000000001;
 	}
 	double dA = atan2(dX,dY); //atan(y/x)
-	cout << dA;
 	dA -= posXYA(2);
 	dA = fmod(dA, 2*M_PI);
-	cout << "dA = " << dA << "\n";
 	double dD = sqrt(pow(dX,2)+pow(dY,2));
-	cout << "dD = " << dD << "\n";
 	if(reversed)
 		dA += M_PI;
 	if(abs(dA)>M_PI){
@@ -372,6 +398,7 @@ int controllerInit(VectorXd startXYA){
 	odometryVariance << 1, 0, 0,
 			0, 1, 0,
 			0, 0, pow(M_PI/180,2);
+	homeXYA = startXYA;
 	posXYA = startXYA;
 	resetEncoders();
 	return 0;
@@ -385,13 +412,22 @@ VectorXd controllerGetC(){
 	return odometryVariance;
 }
 
+void sig_func(int sig){
+	cout << "caught interrupt signal: " << sig << endl;
+	signal(SIGTERM, sig_func);
+}
+
 void *travel_thread_start(void *arg){
 
-	VectorXd endXYA(3);
-	endXYA = *(VectorXd*)arg;
+	travel_done = false;
+	VectorXd destXYA(3);
+	destXYA = *(VectorXd*)arg;
 
-	controllerTravel(endXYA, false);
-	travel_done = true;
+	controllerTravel(destXYA, false);
+
+	if(!interrupt_travel){
+		travel_done = true;
+	}
 
 	return NULL;
 }
@@ -402,42 +438,75 @@ void *travel_thread_reversed_start(void *arg){
 	endXYA = *(VectorXd*)arg;
 
 	controllerTravel(endXYA, true);
-	travel_done = true;
 
 	return NULL;
 }
 
 void *travel_forward(void *arg){
 
+	interruptable = false;
 	double dD = *(double*)arg;
 	controllerForward(dD);
-	travel_done = true;
+	interruptable = true;
 
+	return NULL;
+}
+
+void *travel_backward(void *arg){
+
+	double dD = *(double*)arg;
+	controllerBackward(dD);
+
+	return NULL;
 }
 
 void *box_thread_start(void *arg){
 
-	VectorXd endXYA(3);
-	endXYA << 1215, 250, 0;
+	VectorXd destXYA(3);
+
+	interruptable = false;
+	destXYA = homeXYA;
 
 	controllerForward(450.0);
-	controllerTravel(endXYA, false);
+	controllerTravel(destXYA, false);
+	controllerTravel(destXYA, false);
 	controllerBackward(450.0);
+	controllerRotate(M_PI/3);
 
-	travel_done = true;
 	box_delivered = true;
+	interruptable = true;
+	has_box = false;
 
+	return NULL;
+}
+
+void *avoid_box_thread_start(void *arg){
+
+	VectorXd destXYA(3);
+
+	interruptable = false;
+	if(posXYA(0) > 2430/2){
+		// turn left
+		controllerRotateDegrees(M_PI/4, "left");
+	}else{
+		// turn right
+		controllerRotateDegrees(M_PI/4, "right");
+	}
+	controllerForward(450.0);
+	interruptable = true;
+
+	return NULL;
 }
 
 void *rotate_thread_start(void *arg){
 
 	double dA = *(double*)arg;
-
-	cout << "dA: " << dA << "\n";
-
-	controllerRotateDegrees(dA);
-	travel_done = true;
-	rotation_done = true;
+	if(dA < 0){
+		controllerRotateDegrees(abs(dA), "left");
+	}else{
+		controllerRotateDegrees(abs(dA), "right");
+	}
+//	rotation_done = true;
 
 	return NULL;
 }
@@ -461,29 +530,43 @@ int main(){
 	VectorXd startXYA(3), endXYA(3), midXYA(3), coxAdjXYA(3);
 	MatrixXd coxVariance(3,3), kalman(4,3);
 	pthread_t travel, camera;
+	void *data_ptr;
+	int box_status;
+
 	coxAdjXYA << 0, 0, 0;
+	startXYA << 1215, 250, 0*M_PI/180;
 	odometryVariance << 1, 0, 0,
 						0, 1, 0,
 						0, 0, 5*M_PI/180;
 
-	startXYA << 1215, 250, 0*M_PI/180;
-	void *data_ptr;
-
 	lidarInit(NULL);
 	controllerInit(startXYA);
 
-	pthread_create(&camera, NULL, camera_thread_start, (void*)NULL);
 
+	//####### Phase 1, first box
+
+	box_status = -1;
 	box_delivered = false;
-
-	//####### Phase 1
+	has_box = false;
+	interruptable = true;
 	travel_done = false;
 	rotation_done = false;
+
 	endXYA << 1215, 2000, 0;
 	data_ptr = &endXYA;
+
+
+
+	signal(SIGTERM, sig_func);
+	pthread_create(&camera, NULL, camera_thread_start, (void*)NULL);
+	sleep(1);
 	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	sleep(1);
+
 	lidarCoxStart(posXYA, false);
 	while(!box_delivered){
+
+		box_status = cameraGetBoxStatus();
 		if(lidarCoxDone()){
 			coxAdjXYA = lidarGetCoxAdj();
 			coxVariance = lidarGetVariance();
@@ -494,27 +577,165 @@ int main(){
 			lidarCoxStart(posXYA, false);
 			coxAdjXYA << 0, 0, 0;
 		}
-		if(cameraGetBoxStatus()){
-			cameraSetBoxStatus(false);
-			pthread_cancel(travel);
-			pthread_cancel(camera);
-			travel_done = false;
+//		if(box_status == 0 && interruptable){
+//			interruptable = false;
+//			interrupt_travel = true;
+//			pthread_join(travel, NULL);
+//			cout << "\na zero, avoid!\n";
+//			interrupt_travel = false;
+//			pthread_create(&travel, NULL, avoid_box_thread_start, (void*)NULL);
+////			data_ptr = &endXYA;
+////			pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+		/*}else*/ if(box_status == 1 && !has_box){
+			interruptable = false;
+			interrupt_travel = true;
+			has_box = true;
+			pthread_join(travel, NULL);
+			cout << "\na one, yes pls!\n";
+			interrupt_travel = false;
 			pthread_create(&travel, NULL, box_thread_start, (void*)NULL);
-		}
-		if(travel_done){
+			sleep(1);
+			interruptable = false;
+		}if(box_status == 2 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\nturn right a little...\n";
+			interrupt_travel = false;
+			double dA = 0.5*M_PI/180;
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
+			rotation_done = false;
+			interruptable = true;
+		}else if(box_status == 3 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\nturn left a little...\n";
+			interrupt_travel = false;
+			double dA = -0.5*M_PI/180;
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
+			rotation_done = false;
+			interruptable = true;
+		}else if(box_status == 4 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\ncentered box, go forward...\n";
+			interrupt_travel = false;
+			double dD = 500;
+			data_ptr = &dD;
+			pthread_create(&travel, NULL, travel_forward, data_ptr);
+		}else if(travel_done){
+			double dA = (M_PI*2);
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
 			travel_done = false;
-//			double dA = (M_PI*2);
-//			data_ptr = &dA;
+		}else if(rotation_done){
+			cout << "\ngoing home...\n";
 			data_ptr = &startXYA;
 			pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+			rotation_done = false;
 		}
-//		if(rotation_done){
-//			rotation_done = false;
-//			break;
-//		}
-		usleep(100);
+		usleep(500000);
 	}
-	// Travel back to the middle
+
+	// Hopefully done with one box
+	box_status = -1;
+	box_delivered = false;
+	has_box = false;
+	interruptable = true;
+	travel_done = false;
+	rotation_done = false;
+
+	endXYA << 1215, 2000, 0;
+	coxAdjXYA << 0, 0, 0;
+	odometryVariance << 1, 0, 0,
+						0, 1, 0,
+						0, 0, 5*M_PI/180;
+	data_ptr = &endXYA;
+
+	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+	sleep(1);
+	while(!box_delivered){
+
+		box_status = cameraGetBoxStatus();
+		if(lidarCoxDone()){
+			coxAdjXYA = lidarGetCoxAdj();
+			coxVariance = lidarGetVariance();
+			kalman = kalman_filter(coxVariance, odometryVariance, posXYA+coxAdjXYA, posXYA);
+			odometryVariance = kalman.block(0, 0, 3, 3);
+			lidarSetVariance(odometryVariance);
+			posXYA = kalman.row(3);
+			lidarCoxStart(posXYA, false);
+			coxAdjXYA << 0, 0, 0;
+		}
+//		if(box_status == 0 && interruptable){
+//			interruptable = false;
+//			interrupt_travel = true;
+//			pthread_join(travel, NULL);
+//			cout << "\na zero, avoid!\n";
+//			interrupt_travel = false;
+//			pthread_create(&travel, NULL, avoid_box_thread_start, (void*)NULL);
+////			data_ptr = &endXYA;
+////			pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+		/*}else*/ if(box_status == 1 && !has_box){
+			interruptable = false;
+			interrupt_travel = true;
+			has_box = true;
+			pthread_join(travel, NULL);
+			cout << "\na one, yes pls!\n";
+			interrupt_travel = false;
+			pthread_create(&travel, NULL, box_thread_start, (void*)NULL);
+			sleep(1);
+			interruptable = false;
+		}if(box_status == 2 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\nturn right a little...\n";
+			interrupt_travel = false;
+			double dA = 0.5*M_PI/180;
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
+			rotation_done = false;
+			interruptable = true;
+		}else if(box_status == 3 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\nturn left a little...\n";
+			interrupt_travel = false;
+			double dA = -0.5*M_PI/180;
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
+			rotation_done = false;
+			interruptable = true;
+		}else if(box_status == 4 && interruptable){
+			interruptable = false;
+			interrupt_travel = true;
+			pthread_join(travel, NULL);
+			cout << "\ncentered box, go forward...\n";
+			interrupt_travel = false;
+			double dD = 1000;
+			data_ptr = &dD;
+			pthread_create(&travel, NULL, travel_forward, data_ptr);
+		}else if(travel_done){
+			double dA = (M_PI*2);
+			data_ptr = &dA;
+			pthread_create(&travel, NULL, rotate_thread_start, data_ptr);
+			travel_done = false;
+		}else if(rotation_done){
+			cout << "\ngoing home...\n";
+			data_ptr = &startXYA;
+			pthread_create(&travel, NULL, travel_thread_start, data_ptr);
+			rotation_done = false;
+		}
+		usleep(500000);
+	}
+
+
 //	pthread_create(&travel, NULL, travel_thread_start, data_ptr);
 
 	// ###### Phase 2

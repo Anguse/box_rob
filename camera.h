@@ -11,7 +11,7 @@
 
 int cameraFindBox();
 void *camera_thread_start(void *arg);
-bool cameraGetBoxStatus();
-void cameraSetBoxStatus(bool newStatus);
+int cameraGetBoxStatus();
+void cameraSetBoxStatus(int newStatus);
 
 #endif /* CAMERA_H_ */
